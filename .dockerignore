@@ -1,0 +1,24 @@
+# Secrets must never be baked into an image layer — `docker-compose.yml`
+# injects them at container-start via `env_file: .env` instead, which sets
+# real process environment variables. This matters beyond "don't leak the
+# file": config/loader.py's `_get_env` reads `.env` via `dotenv_values`
+# FIRST, before falling back to `os.environ` — if `.env` were copied into
+# the image, its baked-in values (e.g. QDRANT_URL=http://localhost:6333)
+# would silently WIN over the compose-network override
+# (QDRANT_URL=http://qdrant:6333) that makes the app reach the qdrant
+# service at all. Excluding `.env` from the build context is what makes the
+# os.environ fallback path the one that actually runs in the container.
+.env
+.venv/
+__pycache__/
+*.pyc
+
+# Runtime state — never something a fresh image build should embed; the
+# compose file mounts a volume over this path instead (see README "Step 7").
+chat_history/
+_runs/
+
+# Not source.
+POC.zip
+.pytest_cache/
+.git/

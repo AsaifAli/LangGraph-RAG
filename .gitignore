@@ -1,0 +1,32 @@
+# Secrets and local environments
+.env
+.env.*
+!.env.example
+.venv/
+venv/
+
+# Runtime state
+chat_history/
+_runs/
+*.db
+*.db-shm
+*.db-wal
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Local model/cache data
+.cache/
+models/
+
+# Generated evaluation output
+evaluation/results/*.json
+evaluation/results/*.jsonl
+
+# Bundled snapshots / archives
+POC.zip
+*.zip

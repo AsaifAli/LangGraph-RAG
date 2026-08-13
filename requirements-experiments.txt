@@ -1,0 +1,4 @@
+# Optional experimental/reference agents under scripts/.
+# The main portfolio application is custom LangGraph and does not require this file.
+deepagents==0.7.3
+langsmith==0.10.16

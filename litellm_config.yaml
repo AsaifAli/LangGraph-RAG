@@ -1,0 +1,25 @@
+model_list:
+  - model_name: portfolio-free
+    litellm_params:
+      model: os.environ/OPENROUTER_LITELLM_MODEL
+      api_key: os.environ/OPENROUTER_API_KEY
+
+  - model_name: portfolio-gemini
+    litellm_params:
+      model: os.environ/GEMINI_LITELLM_MODEL
+      api_key: os.environ/GEMINI_API_KEY
+
+router_settings:
+  routing_strategy: simple-shuffle
+  num_retries: 1
+  retry_after: 2
+  fallbacks:
+    - {portfolio-free: [portfolio-gemini]}
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+  disable_no_log_param: true
+
+litellm_settings:
+  request_timeout: 60
+  drop_params: true
