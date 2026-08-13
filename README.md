@@ -1,10 +1,17 @@
-## Free hosted deployment
-
-The public demo target is **Streamlit Community Cloud**. Configure the secrets/variables described in `STREAMLIT_COMMUNITY_CLOUD.md`, select `app/streamlit_app.py` as the entrypoint, and deploy from the GitHub repository.
 
 # Evidence-Grounded Agentic RAG Platform
 
 > **Portfolio project:** a LangGraph-based research system that combines hybrid dense/sparse retrieval, RRF, cross-encoder reranking, persistent conversation state, web research, and **fail-closed citation QA**. The project is designed to demonstrate not only how an answer is generated, but how the system verifies whether its evidence is actually authorized and sufficient.
+
+## 🚀 Deployment
+
+**Status:** Deployed
+
+The application is deployed as a public portfolio demonstration.
+
+**Architecture:** GitHub Actions → Docker → Cloud deployment
+
+> Live demo access is provided selectively for evaluation/interviews.
 
 ## Why this project stands out
 
