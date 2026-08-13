@@ -1,5 +1,5 @@
 
-# Evidence-Grounded Agentic RAG Platform
+# EvidenceFlow — Verified RAG & Research
 
 > **Portfolio project:** a LangGraph-based research system that combines hybrid dense/sparse retrieval, RRF, cross-encoder reranking, persistent conversation state, web research, and **fail-closed citation QA**. The project is designed to demonstrate not only how an answer is generated, but how the system verifies whether its evidence is actually authorized and sufficient.
 
