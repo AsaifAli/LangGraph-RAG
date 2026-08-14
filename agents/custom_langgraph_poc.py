@@ -297,6 +297,17 @@ written. Only state what this document's findings actually say — don't
 compare it to other documents or guess what they might contain; a later
 step handles the cross-document comparison."""
 
+FULL_DOCUMENT_SUMMARY_PROMPT = """User request: {query}
+
+Full content of document {document_id}:
+{content}
+
+Summarize this document comprehensively and concisely. Cover its purpose,
+key facts, important figures/dates/names, and the most useful conclusions.
+Preserve every [EVID: E<n>] marker exactly as written and attach evidence
+markers to factual claims. Use ONLY the supplied document content; do not add
+outside knowledge, guesses, or inferred facts."""
+
 RESEARCH_SYSTEM_PROMPT = """You are a research agent with access to a web
 search tool. Search for the given topic. You may search up to {max_calls}
 times if needed, and stop as soon as you have gathered enough information to
@@ -652,39 +663,29 @@ def _build_graph(*, model, web_search_tool):
         chunks = state.get("chunks") or []
         if not chunks:
             return "synthesize"
-
         kb_mode = state.get("kb_mode", "SEARCH")
 
-        # Whole-document requests should operate on the raw document chunks
-        # directly.  The old path first asked the LLM to summarize each chunk
-        # and then asked another LLM to synthesize those summaries.  With a
-        # one-chunk upload that path is especially brittle because the model
-        # sees a meta-level request ("summarize this document") while being
-        # asked to answer at chunk level.  It also spends an unnecessary LLM
-        # call before the document-level summarizer.
-        #
-        # SUMMARY/COMPARE therefore fan out directly to the document worker,
-        # while SEARCH retains the relevance-focused chunk-analysis path.
-        if kb_mode in ("SUMMARY", "COMPARE"):
-            by_doc: dict[str, list[dict]] = {}
-            for chunk in chunks:
-                by_doc.setdefault(chunk["document_id"], []).append(chunk)
+        # For a single-document SUMMARY request, retrieve_kb has already
+        # fetched the complete document. Summarize that content directly
+        # instead of spending an extra LLM call on per-chunk analysis and then
+        # another call on synthesis. This is both cheaper and more reliable.
+        if kb_mode == "SUMMARY" and len(state.get("document_ids") or []) == 1:
             return [
                 Send(
                     "summarize_document",
                     {
                         "query": state["contextualized_query"],
-                        "document_id": doc_id,
-                        "chunks": items,
+                        "document_id": state["document_ids"][0],
+                        "chunks": chunks,
                     },
                 )
-                for doc_id, items in by_doc.items()
             ]
 
         return [
             Send("analyze_chunk", {"query": state["contextualized_query"], "chunk": c, "kb_mode": kb_mode})
             for c in chunks
         ]
+
 
     async def analyze_chunk(payload: dict) -> dict:
         chunk = payload["chunk"]
@@ -718,12 +719,12 @@ def _build_graph(*, model, web_search_tool):
         return {}
 
     def fanout_documents(state: GraphState):
-        # SEARCH mode reaches this barrier after chunk-level analysis.
-        # SUMMARY/COMPARE mode now reaches the document worker directly from
-        # fanout_chunks, so this node is intentionally a no-op for those modes.
-        if state.get("kb_mode") in ("SUMMARY", "COMPARE"):
-            return "synthesize"
-
+        # Orchestrator-worker pattern (docs.langchain.com/oss/python/langgraph/workflows-agents):
+        # dynamically spawn one summarization worker per document actually
+        # represented in this turn's findings — the count isn't known ahead
+        # of time, which is exactly what Send-based fan-out is for. Skipped
+        # entirely for the (common) single-document case: an extra rollup
+        # call buys nothing when there's only one document to "compare."
         analyses = state.get("chunk_analyses") or []
         if not analyses:
             return "synthesize"
@@ -741,25 +742,29 @@ def _build_graph(*, model, web_search_tool):
         ]
 
     async def summarize_document(payload: dict) -> dict:
-        # SUMMARY/COMPARE gets the actual chunk text rather than an LLM-generated
-        # intermediate extraction.  This keeps whole-document summarization
-        # grounded in the uploaded document and avoids a fragile extra model
-        # interpretation step. SEARCH retains the legacy analyses-based rollup.
-        if payload.get("chunks") is not None:
-            lines = "\n\n".join(
+        if payload.get("chunks"):
+            # Single-document SUMMARY: summarize the actual document content
+            # returned by fetch_all_document_chunks().
+            lines = "\n".join(
                 f"[{c['evidence_id']}] {c['content']}" for c in payload["chunks"]
             )
+            prompt = FULL_DOCUMENT_SUMMARY_PROMPT.format(
+                query=payload["query"], document_id=payload["document_id"], content=lines
+            )
         else:
+            # Multi-document COMPARE: preserve the existing per-document
+            # rollup over chunk analyses before the final comparison.
             lines = "\n".join(f"[{a['evidence_id']}] {a['analysis']}" for a in payload["analyses"])
-        prompt = DOCUMENT_ROLLUP_PROMPT.format(
-            query=payload["query"], document_id=payload["document_id"], findings=lines
-        )
+            prompt = DOCUMENT_ROLLUP_PROMPT.format(
+                query=payload["query"], document_id=payload["document_id"], findings=lines
+            )
         response = await model.ainvoke(prompt)
         return {
             "document_summaries": [
                 {"document_id": payload["document_id"], "summary": _normalize_evidence_tags(content_to_text(response.content))}
             ]
         }
+
 
     async def research_web(state: GraphState) -> dict:
         """Run web research without exposing a provider tool to Gemini.
@@ -820,7 +825,7 @@ def _build_graph(*, model, web_search_tool):
     # route can end the turn directly (no tool call = its own reply is the
     # final answer) — no separate respond_direct node/call needed anymore.
     graph.add_conditional_edges("route", route_branches, ["retrieve_kb", "research_web", END])
-    graph.add_conditional_edges("retrieve_kb", fanout_chunks, ["analyze_chunk", "synthesize"])
+    graph.add_conditional_edges("retrieve_kb", fanout_chunks, ["analyze_chunk", "summarize_document", "synthesize"])
     graph.add_edge("analyze_chunk", "group_chunk_analyses")
     graph.add_conditional_edges(
         "group_chunk_analyses", fanout_documents, ["summarize_document", "synthesize"]
