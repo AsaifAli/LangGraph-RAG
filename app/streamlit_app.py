@@ -84,11 +84,15 @@ import json
 import re
 import sys
 import uuid
+import logging
+import traceback
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 
 import streamlit as st
+
+LOGGER = logging.getLogger(__name__)
 
 # This file lives in app/ — _POC_ROOT is one level up (poc/langgraph_rag/),
 # where .env/chat_history/ live and where the agents/retrieval/tools/shared/
@@ -1720,7 +1724,15 @@ if text or files:
                     "(backend or retrieval likely stalled) — please try again."
                 )
             except Exception as exc:  # noqa: BLE001 - POC diagnostic surface
+                LOGGER.exception("LangGraph turn failed", exc_info=exc)
+                tb = traceback.format_exc()
                 error_text = f"⚠️ Sorry, that run failed: {exc!r}"
+                # Keep the user-facing message clean, but expose the actual
+                # exception type/traceback in an expandable diagnostic area
+                # so hosted deployments don't collapse everything into the
+                # unhelpful `UnexpectedResponse()` string.
+                with st.expander("Technical error details", expanded=True):
+                    st.code(tb, language="text")
 
             # Appended to session_state, not left as a bare `st.error(...)`
             # call — this block always ends in `st.rerun()` a few lines

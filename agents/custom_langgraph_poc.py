@@ -297,17 +297,6 @@ written. Only state what this document's findings actually say — don't
 compare it to other documents or guess what they might contain; a later
 step handles the cross-document comparison."""
 
-FULL_DOCUMENT_SUMMARY_PROMPT = """User request: {query}
-
-Full content of document {document_id}:
-{content}
-
-Summarize this document comprehensively and concisely. Cover its purpose,
-key facts, important figures/dates/names, and the most useful conclusions.
-Preserve every [EVID: E<n>] marker exactly as written and attach evidence
-markers to factual claims. Use ONLY the supplied document content; do not add
-outside knowledge, guesses, or inferred facts."""
-
 RESEARCH_SYSTEM_PROMPT = """You are a research agent with access to a web
 search tool. Search for the given topic. You may search up to {max_calls}
 times if needed, and stop as soon as you have gathered enough information to
@@ -380,6 +369,8 @@ Synthesis quality rules (mandatory):
   question, list every applicable item the findings report in that
   category, not just the first match. Depth follows the request: a specific
   question gets full detail, a broad summary gets headline figures.
+- For a document-summary request, summarize the supplied document content
+  itself. Do not answer the user's words as if they were a narrow fact lookup.
 - When the same fact appears under more than one document, represent it
   under each document it belongs to — don't collapse or drop a duplicate
   citation just because the value repeats.
@@ -664,28 +655,19 @@ def _build_graph(*, model, web_search_tool):
         if not chunks:
             return "synthesize"
         kb_mode = state.get("kb_mode", "SEARCH")
-
-        # For a single-document SUMMARY request, retrieve_kb has already
-        # fetched the complete document. Summarize that content directly
-        # instead of spending an extra LLM call on per-chunk analysis and then
-        # another call on synthesis. This is both cheaper and more reliable.
-        if kb_mode == "SUMMARY" and len(state.get("document_ids") or []) == 1:
-            return [
-                Send(
-                    "summarize_document",
-                    {
-                        "query": state["contextualized_query"],
-                        "document_id": state["document_ids"][0],
-                        "chunks": chunks,
-                    },
-                )
-            ]
-
+        # Whole-document SUMMARY has already fetched every chunk for the
+        # target document. Do NOT send those chunks through the per-chunk
+        # LLM analyzer first: that turns a document summary into N extra
+        # model calls and, with some OpenAI-compatible/free providers, the
+        # intermediate response path is less reliable than a single grounded
+        # synthesis call. Preserve the raw chunks as evidence and let the
+        # final synthesizer summarize them directly.
+        if kb_mode == "SUMMARY":
+            return "synthesize"
         return [
             Send("analyze_chunk", {"query": state["contextualized_query"], "chunk": c, "kb_mode": kb_mode})
             for c in chunks
         ]
-
 
     async def analyze_chunk(payload: dict) -> dict:
         chunk = payload["chunk"]
@@ -742,29 +724,16 @@ def _build_graph(*, model, web_search_tool):
         ]
 
     async def summarize_document(payload: dict) -> dict:
-        if payload.get("chunks"):
-            # Single-document SUMMARY: summarize the actual document content
-            # returned by fetch_all_document_chunks().
-            lines = "\n".join(
-                f"[{c['evidence_id']}] {c['content']}" for c in payload["chunks"]
-            )
-            prompt = FULL_DOCUMENT_SUMMARY_PROMPT.format(
-                query=payload["query"], document_id=payload["document_id"], content=lines
-            )
-        else:
-            # Multi-document COMPARE: preserve the existing per-document
-            # rollup over chunk analyses before the final comparison.
-            lines = "\n".join(f"[{a['evidence_id']}] {a['analysis']}" for a in payload["analyses"])
-            prompt = DOCUMENT_ROLLUP_PROMPT.format(
-                query=payload["query"], document_id=payload["document_id"], findings=lines
-            )
+        lines = "\n".join(f"[{a['evidence_id']}] {a['analysis']}" for a in payload["analyses"])
+        prompt = DOCUMENT_ROLLUP_PROMPT.format(
+            query=payload["query"], document_id=payload["document_id"], findings=lines
+        )
         response = await model.ainvoke(prompt)
         return {
             "document_summaries": [
                 {"document_id": payload["document_id"], "summary": _normalize_evidence_tags(content_to_text(response.content))}
             ]
         }
-
 
     async def research_web(state: GraphState) -> dict:
         """Run web research without exposing a provider tool to Gemini.
@@ -802,6 +771,15 @@ def _build_graph(*, model, web_search_tool):
         elif state.get("chunk_analyses"):
             lines = "\n".join(f"[{c['evidence_id']}] {c['analysis']}" for c in state["chunk_analyses"])
             kb_section = f"Knowledge base findings:\n{lines}\n\n"
+        elif state.get("chunks") and state.get("kb_mode") == "SUMMARY":
+            # SUMMARY mode deliberately bypasses chunk_analysis; raw fetched
+            # document chunks are the evidence source. Keep each chunk's
+            # evidence id attached so citation verification can still map
+            # claims back to the original content.
+            lines = "\n".join(
+                f"[{c['evidence_id']}] {c['content']}" for c in state["chunks"]
+            )
+            kb_section = f"Knowledge base document content:\n{lines}\n\n"
         web_section = ""
         if state.get("web_summary"):
             web_section = f"Web research findings:\n{state['web_summary']}\n\n"
@@ -825,7 +803,7 @@ def _build_graph(*, model, web_search_tool):
     # route can end the turn directly (no tool call = its own reply is the
     # final answer) — no separate respond_direct node/call needed anymore.
     graph.add_conditional_edges("route", route_branches, ["retrieve_kb", "research_web", END])
-    graph.add_conditional_edges("retrieve_kb", fanout_chunks, ["analyze_chunk", "summarize_document", "synthesize"])
+    graph.add_conditional_edges("retrieve_kb", fanout_chunks, ["analyze_chunk", "synthesize"])
     graph.add_edge("analyze_chunk", "group_chunk_analyses")
     graph.add_conditional_edges(
         "group_chunk_analyses", fanout_documents, ["summarize_document", "synthesize"]
