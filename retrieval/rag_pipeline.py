@@ -1078,7 +1078,7 @@ def build_langchain_model(backend: str):
             temperature=0,
         )
 
-    if backend in {"litellm", "gateway"}:
+    if backend == "litellm":
         # LiteLLM is the application's gateway; provider credentials belong
         # to the LiteLLM container, not to this client.  Fail early with a
         # useful configuration error instead of allowing an empty/invalid
@@ -1099,8 +1099,11 @@ def build_langchain_model(backend: str):
             or ""
         ).strip()
 
-        configured_model = _get_env("LLM_GATEWAY_MODEL", "").strip()
-        if configured_model:
+        configured_model = _get_env("LLM_MODEL", "").strip() or _get_env("LLM_GATEWAY_MODEL", "").strip()
+        gateway_url = _get_env("LLM_BASE_URL", "").strip() or _get_env("LLM_GATEWAY_URL", "").strip()
+        if gateway_token and gateway_url:
+            model = "session-model"
+        elif configured_model:
             model = configured_model
         elif openrouter_key:
             model = "portfolio-free"
@@ -1130,8 +1133,8 @@ def build_langchain_model(backend: str):
 
         return ChatOpenAI(
             model=model,
-            base_url=_get_env("LLM_BASE_URL", _get_env("LLM_GATEWAY_URL", "http://litellm:4000/v1")),
-            api_key=_get_env("LLM_API_KEY", _get_env("LLM_GATEWAY_API_KEY", "")),
+            base_url=_get_env("LLM_GATEWAY_URL", "http://litellm:4000/v1"),
+            api_key=_get_env("LLM_GATEWAY_API_KEY", ""),
             temperature=0,
         )
 
@@ -1149,7 +1152,7 @@ def build_langchain_model(backend: str):
         )
 
     raise ValueError(
-        f"Unknown backend {backend!r}; expected 'litellm', 'gateway', 'huggingface', 'gemini-api', or 'vllm'"
+        f"Unknown backend {backend!r}; expected 'litellm', 'huggingface', 'gemini-api', or 'vllm'"
     )
 
 

@@ -1471,14 +1471,17 @@ def _get_or_build_agent() -> dict:
     "New chat"/switching to a past chat in the sidebar) already names a
     valid thread to resume — forcing a fresh one here would silently
     discard that choice."""
-    if st.session_state.built_agent is None:
+    gateway_token = str(st.session_state.get("llm_gateway_session_token", "")).strip()
+    if st.session_state.built_agent is None or st.session_state.get("built_agent_gateway_token", "") != gateway_token:
         checkpointer = _run_async(_build_checkpointer())
         st.session_state.built_agent = build_langgraph_agent(
             document_ids_provider=_document_ids_in_scope,
             document_names_provider=_document_names_in_scope,
             backend=_BACKEND,
             checkpointer=checkpointer,
+            gateway_token=gateway_token,
         )
+        st.session_state.built_agent_gateway_token = gateway_token
     return st.session_state.built_agent
 
 
