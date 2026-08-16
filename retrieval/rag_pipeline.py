@@ -1038,7 +1038,7 @@ def merge_web_search_query(*, user_message: str, tool_query: str) -> str:
 from citations.verifier import finalize as verifier_finalize  # noqa: E402
 
 
-def build_langchain_model(backend: str):
+def build_langchain_model(backend: str, *, gateway_token: str = ""):
     """Build the chat model used by the LangGraph runtime.
 
     Backends:
@@ -1099,6 +1099,7 @@ def build_langchain_model(backend: str):
             or ""
         ).strip()
 
+        gateway_token = (gateway_token or _get_env("LLM_GATEWAY_API_KEY", "")).strip()
         configured_model = _get_env("LLM_MODEL", "").strip() or _get_env("LLM_GATEWAY_MODEL", "").strip()
         gateway_url = _get_env("LLM_BASE_URL", "").strip() or _get_env("LLM_GATEWAY_URL", "").strip()
         if gateway_token and gateway_url:
@@ -1133,8 +1134,8 @@ def build_langchain_model(backend: str):
 
         return ChatOpenAI(
             model=model,
-            base_url=_get_env("LLM_GATEWAY_URL", "http://litellm:4000/v1"),
-            api_key=_get_env("LLM_GATEWAY_API_KEY", ""),
+            base_url=gateway_url or "http://litellm:4000/v1",
+            api_key=gateway_token or _get_env("LLM_GATEWAY_API_KEY", ""),
             temperature=0,
         )
 

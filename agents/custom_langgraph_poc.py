@@ -824,6 +824,7 @@ def build_langgraph_agent(
     top_k: int = DEFAULT_TOP_K,
     backend: str = DEFAULT_BACKEND,
     checkpointer: Any | None = None,
+    gateway_token: str = "",
 ) -> dict[str, Any]:
     """Construct the agent ONCE — same build-once / invoke-many contract the
     deepagents version used (`document_ids_provider` re-read on every turn,
@@ -844,7 +845,7 @@ def build_langgraph_agent(
     if document_names_provider is None:
         document_names_provider = lambda: {}  # noqa: E731
 
-    model = build_langchain_model(backend)
+    model = build_langchain_model(backend, gateway_token=gateway_token)
     # Web search is an optional capability.  The document-RAG path must remain
     # fully functional when no Tavily/API key is configured.  Do not call
     # get_web_search_tool() in that case because it intentionally raises for a
