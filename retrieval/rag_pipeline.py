@@ -309,6 +309,42 @@ def qdrant_collection_name(tenant_schema: str, platform_tenant_id: str) -> str:
     )
 
 
+
+def _ensure_qdrant_payload_indexes(client, collection_name: str) -> None:
+    """Ensure every payload path used by KB filters has a keyword index.
+
+    Qdrant requires payload indexes for filtered search on these fields. This is
+    intentionally idempotent: existing indexes are left alone, while missing
+    indexes are created automatically so a pre-existing collection is repaired
+    during normal application use instead of requiring a manual DB operation.
+    """
+    from qdrant_client import models
+    from qdrant_client.http.exceptions import UnexpectedResponse
+
+    index_fields = (
+        "meta_data.tenant_schema",
+        "meta_data.document_id",
+        "meta_data.thread_id",
+        "meta_data.person_ids",
+        "meta_data.org_ids",
+    )
+
+    for field_name in index_fields:
+        try:
+            client.create_payload_index(
+                collection_name=collection_name,
+                field_name=field_name,
+                field_schema=models.PayloadSchemaType.KEYWORD,
+                wait=True,
+            )
+        except UnexpectedResponse as exc:
+            # Qdrant returns an error if the index already exists. That is a
+            # normal no-op for this idempotent repair path; surface anything
+            # else because it may indicate a real schema/configuration issue.
+            if "already exists" not in str(exc).lower():
+                raise
+
+
 def chunk_text(text: str, *, chunk_size: int = DEFAULT_CHUNK_SIZE, overlap: int = DEFAULT_CHUNK_OVERLAP) -> list[str]:
     """Dynamic, content-adaptive chunker for user-uploaded prose documents —
     LangChain's `RecursiveCharacterTextSplitter` (`langchain_text_splitters`;
@@ -493,6 +529,7 @@ async def ingest_document(
         metadata_payload_key=AIReferenceKeys.META_DATA,
         force_recreate=False,  # append — reuses the collection if it already exists
     )
+    await _to_thread_with_retry(_ensure_qdrant_payload_indexes, client, collection_name)
     return {"document_id": document_id, "chunk_count": len(chunks)}
 
 
@@ -580,6 +617,7 @@ async def retrieve_and_rerank(
     from shared.constants import AIReferenceKeys
 
     client = QdrantClient(url=config.vector_db.qdrant_url, api_key=config.vector_db.qdrant_api_key)
+    _ensure_qdrant_payload_indexes(client, collection_name)
     vector_store = QdrantVectorStore(
         client=client,
         collection_name=collection_name,
@@ -891,6 +929,7 @@ async def fetch_all_document_chunks(
     filter_expr = build_kb_filter_expr(request)
     collection_name = qdrant_collection_name(tenant_schema, platform_tenant_id)
     client = QdrantClient(url=config.vector_db.qdrant_url, api_key=config.vector_db.qdrant_api_key)
+    _ensure_qdrant_payload_indexes(client, collection_name)
 
     chunks: list[RetrievedChunk] = []
     offset = None
