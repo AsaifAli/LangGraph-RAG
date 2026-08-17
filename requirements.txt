@@ -38,7 +38,7 @@ huggingface_hub==1.26.1
 sentence-transformers==5.7.0
 
 # --- retrieval: LangChain-native replacements for Agno's Qdrant/rerank wrappers ---
-qdrant-client==1.16.2
+qdrant-client==1.19.0
 langchain-qdrant==1.1.0    # RetrievalMode.HYBRID: native dense+sparse Qdrant Query
                             # API prefetch+RRF, see rag_pipeline.py's
                             # retrieve_and_rerank/build_sparse_embedder
