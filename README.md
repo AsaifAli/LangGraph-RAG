@@ -16,7 +16,7 @@ The application is deployed as a public portfolio demonstration.
 ## Why this project stands out
 
 - **Agentic routing:** the graph decides between knowledge-base search, web research, both, or a direct response.
-- **Hybrid retrieval:** dense + sparse retrieval with reciprocal-rank fusion, followed by local cross-encoder reranking.
+- **Hybrid retrieval:** dense + sparse retrieval with reciprocal-rank fusion, followed by cross-encoder reranking. The local profile runs inference in-process; the Render profile uses Qdrant Cloud Inference for the same dense MiniLM + BM25 vectors and hosted Jina reranking.
 - **Evidence registry:** every retrieved chunk receives a closed-turn evidence ID; generated citations are verified against that exact evidence set.
 - **Quality gate:** deterministic numeric/date support checks, citation coverage, possible evidence-conflict detection, and **abstention when a KB route has no verified evidence**.
 - **Document workflows:** targeted search, whole-document summary, and cross-document comparison.
@@ -70,14 +70,7 @@ Client (Streamlit) -> LangGraph agent (route -> retrieve -> analyze -> synthesiz
 
 See `PROJECT_STRUCTURE.md` for the full file-by-file map and request flow.
 
-Retrieval is hybrid dense+sparse: `langchain-qdrant`'s `RetrievalMode.HYBRID`
-runs a genuine server-side Qdrant Query API prefetch+RRF fusion between a
-dense embedding leg (local `sentence-transformers/all-MiniLM-L6-v2`) and a
-sparse BM25 leg (`fastembed`'s `Qdrant/bm25`), followed by a local ONNX
-cross-encoder rerank (`jinaai/jina-reranker-v1-turbo-en` via `fastembed`) —
-no external API calls, no API keys, for either the embedder or the
-reranker. See `retrieval/rag_pipeline.py`'s `retrieve_and_rerank` docstring
-for the full mechanism.
+Retrieval is hybrid dense+sparse with genuine server-side Qdrant Query API prefetch+RRF fusion. The default local profile uses the original MiniLM + FastEmbed BM25 + Jina ONNX reranker path. The Render profile flips only the inference location: Qdrant Cloud Inference generates the same 384-dimensional `sentence-transformers/all-MiniLM-L6-v2` dense vector and `Qdrant/bm25` sparse vector, then Qdrant performs the same RRF fusion; the final `jina-reranker-v1-turbo-en` pass is hosted through Jina AI. See `retrieval/rag_pipeline.py` for the active backend implementation.
 
 ## Chat UI (`app/streamlit_app.py`) — a chat, not a form
 

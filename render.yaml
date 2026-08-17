@@ -1,0 +1,33 @@
+services:
+  - type: web
+    name: evidenceflow-langgraph
+    env: docker
+    dockerfilePath: ./Dockerfile.render
+    dockerContext: .
+    plan: free
+    healthCheckPath: /_stcore/health
+    envVars:
+      - key: RETRIEVAL_BACKEND
+        value: qdrant-cloud
+      - key: RERANK_BACKEND
+        value: jina
+      - key: HOSTED_DENSE_MODEL
+        value: sentence-transformers/all-MiniLM-L6-v2
+      - key: HOSTED_SPARSE_MODEL
+        value: Qdrant/bm25
+      - key: HOSTED_DENSE_VECTOR_SIZE
+        value: "384"
+      - key: QDRANT_URL
+        sync: false
+      - key: QDRANT_API_KEY
+        sync: false
+      - key: JINA_API_KEY
+        sync: false
+      - key: LLM_GATEWAY_URL
+        sync: false
+      - key: KATZILLA_ENABLED
+        value: "true"
+      - key: KATZILLA_API_KEY
+        sync: false
+      - key: TAVILY_API_KEY
+        sync: false

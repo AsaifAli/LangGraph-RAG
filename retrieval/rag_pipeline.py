@@ -120,6 +120,22 @@ DEFAULT_MAX_WEB_SEARCH_CALLS = int(_get_env("MAX_WEB_SEARCH_CALLS", "5"))
 # would add a hard dependency on that provider's uptime and quota to every
 # retrieval call).
 DEFAULT_RERANK_MODEL = _get_env("RERANK_MODEL", "jinaai/jina-reranker-v1-turbo-en")
+# --- Hosted retrieval mode (Render) -------------------------------------------------
+# Keep the canonical local retrieval path unchanged for Streamlit/Compose. When
+# RETRIEVAL_BACKEND=qdrant-cloud, Qdrant Cloud generates the SAME MiniLM dense
+# embeddings and Qdrant BM25 sparse vectors server-side, preserving the exact
+# dense+sparse schema and server-side RRF retrieval while removing torch/fastembed
+# from the Render runtime. The reranker can then move to Jina's hosted API.
+RETRIEVAL_BACKEND = _get_env("RETRIEVAL_BACKEND", "local").strip().lower()
+RERANK_BACKEND = _get_env("RERANK_BACKEND", "local").strip().lower()
+HOSTED_DENSE_MODEL = _get_env(
+    "HOSTED_DENSE_MODEL", "sentence-transformers/all-MiniLM-L6-v2"
+)
+HOSTED_SPARSE_MODEL = _get_env("HOSTED_SPARSE_MODEL", "Qdrant/bm25")
+JINA_API_KEY = _get_env("JINA_API_KEY", "").strip()
+JINA_RERANK_URL = _get_env("JINA_RERANK_URL", "https://api.jina.ai/v1/rerank")
+JINA_TIMEOUT_SECONDS = float(_get_env("JINA_TIMEOUT_SECONDS", "30"))
+HOSTED_DENSE_VECTOR_SIZE = int(_get_env("HOSTED_DENSE_VECTOR_SIZE", "384"))
 # Cross-encoder relevance floor below which a candidate is dropped before it
 # ever reaches a chunk-analyst subagent call. Tuned for this specific
 # reranker model's score distribution (0.0 default is a safe floor — see
@@ -239,6 +255,50 @@ class RetrievedChunk:
 
 _EMBEDDER_CACHE: dict = {}
 _SPARSE_EMBEDDER_CACHE: dict = {}
+
+
+def hosted_retrieval_enabled() -> bool:
+    return RETRIEVAL_BACKEND in {"qdrant-cloud", "qdrant_cloud", "hosted"}
+
+
+def jina_reranker_enabled() -> bool:
+    return RERANK_BACKEND in {"jina", "hosted"}
+
+
+def build_qdrant_client():
+    """Build the Qdrant client with Cloud Inference enabled when requested."""
+    from qdrant_client import QdrantClient
+
+    config = load_runtime_config()
+    return QdrantClient(
+        url=config.vector_db.qdrant_url,
+        api_key=config.vector_db.qdrant_api_key,
+        cloud_inference=hosted_retrieval_enabled(),
+    )
+
+
+def ensure_hybrid_collection(client: Any, collection_name: str) -> None:
+    """Ensure the exact 384-d MiniLM + sparse BM25 hybrid schema exists.
+
+    Qdrant Cloud Inference can generate both representations server-side.
+    Existing compatible collections are preserved; no destructive recreation is
+    performed here.
+    """
+    from qdrant_client import models
+
+    if client.collection_exists(collection_name=collection_name):
+        return
+    client.create_collection(
+        collection_name=collection_name,
+        vectors_config={
+            DENSE_VECTOR_NAME: models.VectorParams(
+                size=HOSTED_DENSE_VECTOR_SIZE, distance=models.Distance.COSINE
+            )
+        },
+        sparse_vectors_config={
+            SPARSE_VECTOR_NAME: models.SparseVectorParams(modifier=models.Modifier.IDF)
+        },
+    )
 
 
 def build_embedder():
@@ -463,30 +523,15 @@ async def ingest_document(
     platform_tenant_id: str = PLATFORM_TENANT_ID,
     document_id: str | None = None,
 ) -> dict:
-    """Extract text, chunk, embed, and upsert a user-uploaded document into
-    the POC's demo Qdrant collection — additive (never `force_recreate`,
-    unlike `seed_demo_kb.py`'s fixed demo data), so uploads accumulate
-    rather than wiping prior ones. Returns
-    `{"document_id": ..., "chunk_count": ...}`; pass the returned
-    `document_id` in `document_ids=` on `retrieve_and_rerank` / `run_rag` /
-    `run_custom_langgraph` to make the upload queryable.
+    """Extract, chunk and store a document in the active Qdrant backend.
 
-    `content` is always raw bytes (not pre-decoded text) — `extract_text`
-    handles binary formats (PDF/DOCX/DOC) as well as plain text, dispatched
-    by `source_name`'s extension.
-
-    Writes BOTH a dense and a sparse (BM25) vector per chunk
-    (`RetrievalMode.HYBRID`) — `retrieve_and_rerank` queries both legs via
-    Qdrant's native Query API prefetch+RRF (see that function's docstring).
-    `force_recreate=False` here means an EXISTING dense-only collection
-    (from before hybrid support was added) will NOT be silently upgraded —
-    see `seed_demo_kb.py`, which does force-recreate, for how the demo
-    collection actually gets its hybrid schema.
+    Local mode keeps the original LangChain/FastEmbed path. Hosted mode uses
+    Qdrant Cloud Inference for the same MiniLM dense model and server-side BM25,
+    so the stored representation stays dense+sparse and the Render runtime does
+    not need torch, sentence-transformers, or fastembed.
     """
-    from langchain_qdrant import QdrantVectorStore, RetrievalMode
-    from qdrant_client import QdrantClient, models
-
     from shared.constants import AIReferenceKeys
+    from qdrant_client import models
 
     if document_id is None:
         document_id = str(uuid.uuid4())
@@ -494,44 +539,75 @@ async def ingest_document(
     text = extract_text(content, source_name)
     config = load_runtime_config()
     collection_name = qdrant_collection_name(tenant_schema, platform_tenant_id)
-    client = QdrantClient(url=config.vector_db.qdrant_url, api_key=config.vector_db.qdrant_api_key)
-    _ensure_qdrant_payload_indexes(client, collection_name)
     chunks = chunk_csv_text(text) if source_name.lower().endswith(".csv") else chunk_text(text)
     if not chunks:
         return {"document_id": document_id, "chunk_count": 0}
 
-    metadatas = [
-        {
+    client = build_qdrant_client()
+    ensure_hybrid_collection(client, collection_name)
+    _ensure_qdrant_payload_indexes(client, collection_name)
+
+    if not hosted_retrieval_enabled():
+        from langchain_qdrant import QdrantVectorStore, RetrievalMode
+
+        metadatas = [
+            {
+                "document_id": document_id,
+                "tenant_schema": f"{tenant_schema}_{platform_tenant_id}",
+                "section_path": f"{source_name} > chunk {i}",
+            }
+            for i in range(1, len(chunks) + 1)
+        ]
+        await _to_thread_with_retry(
+            QdrantVectorStore.from_texts,
+            texts=chunks,
+            embedding=build_embedder(),
+            sparse_embedding=build_sparse_embedder(),
+            retrieval_mode=RetrievalMode.HYBRID,
+            vector_name=DENSE_VECTOR_NAME,
+            sparse_vector_name=SPARSE_VECTOR_NAME,
+            metadatas=metadatas,
+            collection_name=collection_name,
+            url=config.vector_db.qdrant_url,
+            api_key=config.vector_db.qdrant_api_key,
+            distance=models.Distance.COSINE,
+            content_payload_key=AIReferenceKeys.CONTENT,
+            metadata_payload_key=AIReferenceKeys.META_DATA,
+            force_recreate=False,
+        )
+        return {"document_id": document_id, "chunk_count": len(chunks)}
+
+    # Hosted mode: Qdrant Cloud creates BOTH vectors from text on the server.
+    # Deterministic UUID5 IDs make repeated deployment seeding idempotent.
+    from qdrant_client import models
+
+    points = []
+    for i, chunk in enumerate(chunks, start=1):
+        point_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{document_id}:{i}"))
+        metadata = {
             "document_id": document_id,
             "tenant_schema": f"{tenant_schema}_{platform_tenant_id}",
             "section_path": f"{source_name} > chunk {i}",
         }
-        for i in range(1, len(chunks) + 1)
-    ]
+        points.append(
+            models.PointStruct(
+                id=point_id,
+                vector={
+                    DENSE_VECTOR_NAME: models.Document(text=chunk, model=HOSTED_DENSE_MODEL),
+                    SPARSE_VECTOR_NAME: models.Document(text=chunk, model=HOSTED_SPARSE_MODEL),
+                },
+                payload={
+                    AIReferenceKeys.CONTENT: chunk,
+                    AIReferenceKeys.META_DATA: metadata,
+                },
+            )
+        )
 
-    await _to_thread_with_retry(
-        QdrantVectorStore.from_texts,
-        texts=chunks,
-        embedding=build_embedder(),
-        sparse_embedding=build_sparse_embedder(),
-        retrieval_mode=RetrievalMode.HYBRID,
-        vector_name=DENSE_VECTOR_NAME,
-        sparse_vector_name=SPARSE_VECTOR_NAME,
-        metadatas=metadatas,
-        collection_name=collection_name,
-        url=config.vector_db.qdrant_url,
-        api_key=config.vector_db.qdrant_api_key,
-        distance=models.Distance.COSINE,
-        content_payload_key=AIReferenceKeys.CONTENT,
-        metadata_payload_key=AIReferenceKeys.META_DATA,
-        force_recreate=False,  # append — reuses the collection if it already exists
-    )
+    await _to_thread_with_retry(client.upsert, collection_name=collection_name, points=points, wait=True)
     return {"document_id": document_id, "chunk_count": len(chunks)}
 
 
-# Process-wide encoder cache: each fastembed cross-encoder model loads once
-# (a real, if small, ONNX model load) and is reused for every subsequent
-# call in this process, not reloaded per query.
+# Process-wide encoder cache for the local (Streamlit/Compose) profile.
 _RERANK_ENCODER_CACHE: dict = {}
 
 
@@ -548,17 +624,54 @@ def _get_rerank_encoder(model_name: str):
 def _local_cross_encoder_rerank(
     query: str, documents: list, *, top_n: int, model_name: str = DEFAULT_RERANK_MODEL
 ) -> list[tuple[Any, float]]:
-    """Rerank a candidate pool with a local cross-encoder model
-    (`jinaai/jina-reranker-v1-turbo-en` via `fastembed`'s `TextCrossEncoder`).
-    Runs fully in-process (ONNX) — no API key, no external call, so it
-    always actually runs regardless of which external services are
-    reachable. Returns `(document, score)` pairs, sorted descending by
-    score, capped at `top_n`."""
     encoder = _get_rerank_encoder(model_name)
     contents = [doc.page_content or "" for doc in documents]
     scores = list(encoder.rerank(query, contents))
     ranked = sorted(zip(documents, scores), key=lambda pair: -pair[1])
     return ranked[:top_n] if top_n > 0 else ranked
+
+
+async def _jina_cross_encoder_rerank(
+    query: str, documents: list, *, top_n: int
+) -> list[tuple[Any, float]]:
+    """Hosted reranking using the same Jina reranker model as local fastembed.
+
+    The API returns result indexes, so document identity and metadata remain
+    untouched; only the relevance score/order changes.
+    """
+    if not JINA_API_KEY:
+        raise RuntimeError("JINA_API_KEY is required when RERANK_BACKEND=jina")
+
+    import httpx
+
+    payload = {
+        "model": DEFAULT_RERANK_MODEL,
+        "query": query,
+        "documents": [doc.page_content or "" for doc in documents],
+        "top_n": min(max(top_n, 0), len(documents)),
+    }
+    headers = {"Authorization": f"Bearer {JINA_API_KEY}", "Content-Type": "application/json"}
+    async with httpx.AsyncClient(timeout=JINA_TIMEOUT_SECONDS) as client:
+        response = await client.post(JINA_RERANK_URL, headers=headers, json=payload)
+        response.raise_for_status()
+        body = response.json()
+
+    results = body.get("results") or []
+    ranked: list[tuple[Any, float]] = []
+    for item in results:
+        idx = int(item["index"])
+        ranked.append((documents[idx], float(item.get("relevance_score", 0.0))))
+    return ranked
+
+
+async def _cross_encoder_rerank(
+    query: str, documents: list, *, top_n: int
+) -> list[tuple[Any, float]]:
+    if jina_reranker_enabled():
+        return await _jina_cross_encoder_rerank(query, documents, top_n=top_n)
+    return await _to_thread_with_retry(
+        _local_cross_encoder_rerank, query, documents, top_n=top_n
+    )
 
 
 async def retrieve_and_rerank(
@@ -569,37 +682,24 @@ async def retrieve_and_rerank(
     document_ids: list[str],
     top_k: int = DEFAULT_TOP_K,
 ) -> list[RetrievedChunk]:
-    """Retrieve-then-rerank, built entirely on LangChain-native primitives
-    (no agent-framework vector-db wrapper class involved):
+    """Hybrid retrieval with server-side Qdrant RRF, then cross-encoder rerank.
 
-      1. Native hybrid search via `langchain_qdrant.QdrantVectorStore`
-         (`RetrievalMode.HYBRID`) — dense (`build_embedder`) and sparse/BM25
-         (`build_sparse_embedder`, `Qdrant/bm25` via `fastembed`) legs run
-         as a SINGLE Qdrant Query API call (`prefetch=[dense, sparse]`,
-         `query=FusionQuery(fusion=Fusion.RRF)`, confirmed directly from the
-         installed `langchain_qdrant` source, not assumed) — genuine
-         server-side RRF fusion between two independently-run legs, not a
-         client-side approximation. Uses `build_kb_filter_expr` for
-         tenant/document scoping (a plain `qdrant_client.models.Filter`).
-      2. Local cross-encoder rerank (`_local_cross_encoder_rerank`,
-         `jinaai/jina-reranker-v1-turbo-en` via `fastembed`) — runs
-         in-process, no API key, no external call, so it always actually
-         executes regardless of environment.
+    Local profile: dense + FastEmbed BM25 + RRF, then local Jina reranker.
+    Render profile: the exact same dense model and BM25 are generated by
+    Qdrant Cloud Inference, the same RRF fusion happens inside Qdrant, and the
+    same Jina reranker is called through its hosted API.
 
-    A single collection with named dense+sparse vectors from the start
-    (created directly with hybrid schema, no dense-only-to-hybrid migration
-    path needed since this is a fresh collection).
+    The ranking architecture therefore stays identical; only where model
+    inference executes changes.
     """
-    import asyncio
-
-    from langchain_qdrant import QdrantVectorStore, RetrievalMode
-    from qdrant_client import QdrantClient
+    from langchain_core.documents import Document
+    from qdrant_client import models
 
     from shared.entities import SanitizedQuery, SecureAgentRequest
+    from shared.constants import AIReferenceKeys
     from retrieval.kb_filter_builder import build_kb_filter_expr
 
     config = load_runtime_config()
-
     request = SecureAgentRequest(
         query=SanitizedQuery(content=query),
         correlation_id=str(uuid.uuid4()),
@@ -609,49 +709,51 @@ async def retrieve_and_rerank(
     )
     filter_expr = build_kb_filter_expr(request)
     collection_name = qdrant_collection_name(tenant_schema, platform_tenant_id)
-
-    from shared.constants import AIReferenceKeys
-
-    client = QdrantClient(url=config.vector_db.qdrant_url, api_key=config.vector_db.qdrant_api_key)
+    client = build_qdrant_client()
+    ensure_hybrid_collection(client, collection_name)
     _ensure_qdrant_payload_indexes(client, collection_name)
-    vector_store = QdrantVectorStore(
-        client=client,
-        collection_name=collection_name,
-        embedding=build_embedder(),
-        sparse_embedding=build_sparse_embedder(),
-        retrieval_mode=RetrievalMode.HYBRID,
-        vector_name=DENSE_VECTOR_NAME,
-        sparse_vector_name=SPARSE_VECTOR_NAME,
-        # Explicit payload key names (AIReferenceKeys.CONTENT / .META_DATA),
-        # NOT langchain-qdrant's own defaults ("page_content"/"metadata") —
-        # required so the filter below, built by build_kb_filter_expr
-        # (which filters on the `meta_data.tenant_schema` /
-        # `meta_data.document_id` payload paths,
-        # VectorDBConstants.META_TENANT_SCHEMA_KEY/META_DOCUMENT_ID_KEY),
-        # actually matches points in this collection. seed_demo_kb.py writes
-        # with the same keys for exactly this reason.
-        content_payload_key=AIReferenceKeys.CONTENT,
-        metadata_payload_key=AIReferenceKeys.META_DATA,
-    )
 
     rerank_cfg = config.rerank
     prefetch_limit = max(top_k, top_k * rerank_cfg.hybrid_prefetch_multiplier)
 
+    def _hybrid_query(single_filter: models.Filter) -> list[Any]:
+        if hosted_retrieval_enabled():
+            dense_query = models.Document(text=query, model=HOSTED_DENSE_MODEL)
+            sparse_query = models.Document(text=query, model=HOSTED_SPARSE_MODEL)
+        else:
+            from langchain_qdrant import QdrantVectorStore, RetrievalMode
+
+            vector_store = QdrantVectorStore(
+                client=client,
+                collection_name=collection_name,
+                embedding=build_embedder(),
+                sparse_embedding=build_sparse_embedder(),
+                retrieval_mode=RetrievalMode.HYBRID,
+                vector_name=DENSE_VECTOR_NAME,
+                sparse_vector_name=SPARSE_VECTOR_NAME,
+                content_payload_key=AIReferenceKeys.CONTENT,
+                metadata_payload_key=AIReferenceKeys.META_DATA,
+            )
+            # `similarity_search_with_score` invokes Qdrant's hybrid prefetch+RRF
+            # query under the hood; keep the existing local path untouched.
+            return vector_store.similarity_search_with_score(
+                query, k=prefetch_limit, filter=single_filter
+            )
+
+        result = client.query_points(
+            collection_name=collection_name,
+            prefetch=[
+                models.Prefetch(query=dense_query, using=DENSE_VECTOR_NAME, limit=prefetch_limit),
+                models.Prefetch(query=sparse_query, using=SPARSE_VECTOR_NAME, limit=prefetch_limit),
+            ],
+            query=models.FusionQuery(fusion=models.Fusion.RRF),
+            query_filter=single_filter,
+            limit=prefetch_limit,
+            with_payload=True,
+        )
+        return result.points
+
     if len(document_ids) > 1:
-        # Multi-document scope (a comparison/"across my documents" question)
-        # — fetch candidates PER document (parallel), not one shared query
-        # across all of them. A single shared top-k ranking has no fairness
-        # guarantee: nothing stops one document's chunks from winning every
-        # seat and the other document silently contributing zero candidates
-        # to the rerank stage, purely because its content scored lower on
-        # THIS query — not because it lacks the answer. Checked live, not
-        # just theorized: a 2-document comparison test happened to retrieve
-        # the right chunk from both sides this time (the corpus was small
-        # enough that everything fit), but nothing in a single shared query
-        # would have caught it if it hadn't — this replaces luck with a
-        # guarantee. Each document's own filter is built the same way
-        # (`build_kb_filter_expr`) as the single-document path below, just
-        # scoped to one id per call instead of a MatchAny over all of them.
         per_doc_filters = []
         for doc_id in document_ids:
             doc_request = SecureAgentRequest(
@@ -661,92 +763,54 @@ async def retrieve_and_rerank(
                 tenant_schema=tenant_schema,
                 document_ids=[UUID(doc_id)],
             )
-            per_doc_filters.append((doc_id, build_kb_filter_expr(doc_request)))
-
+            per_doc_filters.append(build_kb_filter_expr(doc_request))
         per_doc_results = await asyncio.gather(
-            *[
-                _to_thread_with_retry(
-                    vector_store.similarity_search_with_score, query, k=prefetch_limit, filter=f
-                )
-                for _doc_id, f in per_doc_filters
-            ]
+            *[_to_thread_with_retry(_hybrid_query, f) for f in per_doc_filters]
         )
-        documents = [doc for results in per_doc_results for doc, _score in results]
+        results = [item for group in per_doc_results for item in group]
     else:
-        # Single-document (or no-scope) query — one shared query is already
-        # fair by construction, no per-document fan-out needed.
-        results = await _to_thread_with_retry(
-            vector_store.similarity_search_with_score,
-            query,
-            k=prefetch_limit,
-            filter=filter_expr,
+        results = await _to_thread_with_retry(_hybrid_query, filter_expr)
+
+    documents = []
+    for point in results:
+        payload = point.payload or {}
+        content = payload.get(AIReferenceKeys.CONTENT, "") if isinstance(payload, dict) else ""
+        metadata = payload.get(AIReferenceKeys.META_DATA, {}) if isinstance(payload, dict) else {}
+        documents.append(
+            Document(
+                page_content=content or "",
+                metadata={**metadata, "_qdrant_rrf_score": float(point.score)},
+            )
         )
-        documents = [doc for doc, _score in results]
 
     chunks: list[RetrievedChunk] = []
     if documents:
-        # Local cross-encoder rerank ALWAYS runs now (no API key gate) —
-        # see docstring for why this replaced the Cohere path. Reranks the
-        # COMBINED pool (all documents together) ONCE — fairness comes from
-        # every document getting a fair SHOT at the pool above, not from
-        # reranking each document in isolation, which would lose cross-
-        # document relevance ordering entirely. Off the main event loop via
-        # _to_thread_with_retry since ONNX inference is synchronous/CPU-bound.
-        reranked = await _to_thread_with_retry(
-            _local_cross_encoder_rerank, query, documents, top_n=max(top_k, len(documents))
+        reranked = await _cross_encoder_rerank(
+            query, documents, top_n=max(top_k, len(documents))
         )
         scored = [(doc, float(score)) for doc, score in reranked]
         above = [pair for pair in scored if pair[1] > DEFAULT_RERANK_SCORE_THRESHOLD]
-        # Overall seat count. Computed BEFORE selection, not applied as a slice
-        # after it — see the multi-document branch below for why that ordering
-        # is the whole point.
         cap = max(top_k, len(document_ids) * DEFAULT_RERANK_MIN_RESULTS)
-        # Fallback found LIVE, not theorized: "summarize the document" against
-        # real CSV row chunks scored every candidate NEGATIVE (-3.18 to
-        # -3.30) — a cross-encoder is tuned for QA-relevance matching a
-        # specific question to a specific passage, not "is this generically
-        # summarizable," so a vague/summarization-style query can legitimately
-        # score every real, on-topic chunk below the floor. Applying the
-        # threshold here previously turned a real, present, correctly-scoped
-        # document into a hard "nothing found" — the retrieval layer alone
-        # deciding "irrelevant" and never giving the model a chance to see
-        # ANY candidate, exactly the failure the "search first, ask
-        # clarifying questions only after" routing rule was trying to avoid.
-        # So: never let a genuinely non-empty candidate pool starve to zero.
-        # Both branches below honour that — per document when more than one is
-        # in scope, overall when there's just one.
+
         if len(document_ids) > 1:
-            # RESERVE each document's seats first, then fill the remainder by
-            # score — rather than score-ranking everything and slicing to `cap`
-            # at the end. The slice-last version silently defeated its own
-            # guarantee: with 2 documents and top_k=5, a document whose chunks
-            # all scored below the other's got appended after the cap and then
-            # cut straight back off, so "compare A and B" really did become
-            # "describe A" — the exact failure this branch exists to prevent.
-            # Verified with the reranker/Qdrant mocked: doc B was absent from
-            # the result both when its chunks scored above the threshold and
-            # when they scored below it.
             reserved: list[tuple[Any, float]] = []
             for doc_id in document_ids:
-                own_above = [p for p in above if str(p[0].metadata.get("document_id")) == doc_id]
-                # Fall back to the document's best candidates regardless of
-                # score when none clear the floor — same reasoning as the
-                # single-document fallback below (a cross-encoder can score
-                # every genuinely on-topic chunk negative for a vague or
-                # summarization-style query).
-                own_any = [p for p in scored if str(p[0].metadata.get("document_id")) == doc_id]
+                own_above = [
+                    p for p in above if str(p[0].metadata.get("document_id")) == doc_id
+                ]
+                own_any = [
+                    p for p in scored if str(p[0].metadata.get("document_id")) == doc_id
+                ]
                 reserved.extend((own_above or own_any)[:DEFAULT_RERANK_MIN_RESULTS])
             taken = {id(doc) for doc, _ in reserved}
             filler = [pair for pair in above if id(pair[0]) not in taken]
             survivors = reserved + filler[: max(0, cap - len(reserved))]
-            # Reserved seats were collected per document, so restore global
-            # score order for the caller (evidence ids are assigned in list
-            # order, and the best-supported chunk should still be E1).
             survivors.sort(key=lambda pair: -pair[1])
         else:
             survivors = above[:cap]
             if not survivors and scored:
                 survivors = scored[:DEFAULT_RERANK_MIN_RESULTS]
+
         for idx, (doc, score) in enumerate(survivors, start=1):
             chunks.append(
                 RetrievedChunk(
@@ -754,7 +818,7 @@ async def retrieve_and_rerank(
                     document_id=str(doc.metadata.get("document_id") or "unknown"),
                     content=doc.page_content or "",
                     score=score,
-                    meta_data=doc.metadata,
+                    meta_data={k: v for k, v in doc.metadata.items() if k != "_qdrant_rrf_score"},
                 )
             )
     return chunks
