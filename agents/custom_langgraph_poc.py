@@ -100,6 +100,7 @@ Run (single-shot, no persisted memory — same shape as research_poc.py/data_ana
 from __future__ import annotations
 
 import argparse
+import json
 import asyncio
 import operator
 import re
@@ -114,6 +115,7 @@ from langchain_core.tools import tool
 from langgraph.types import RetryPolicy
 
 from shared.quality import citation_quality, evidence_conflict_candidates, numeric_support, should_abstain_from_kb
+from tools.primary_source_mcp import KatzillaMCPClient, get_primary_source_mcp
 from retrieval.rag_pipeline import (
     DEFAULT_BACKEND,
     DEFAULT_MAX_WEB_SEARCH_CALLS,
@@ -179,6 +181,9 @@ optional web-search tool when web search is configured.
   uploaded documents/policies.
 - search_web(query): search the web for current/external information, but only
   when that optional tool is actually available.
+- search_primary_source(query, agent, action, params_json): query live primary-source
+  government/official datasets through the Katzilla MCP connector, but only when
+  that optional capability is actually available.
 
 Decide whether this question needs one, both, or neither:
 - Broad, unscoped request to summarize or get insights from "the
@@ -216,6 +221,12 @@ Decide whether this question needs one, both, or neither:
   conversation using knowledge-base findings you already have -> answer
   from that directly, don't call search_knowledge_base again for the same
   fact.
+- A current factual question that is better answered from an authoritative
+  primary source (government statistics, regulatory filings, FDA/CDC/NIH
+  data, USGS/NWS/FEMA incidents, SEC/Congress/Federal Register, etc.) ->
+  prefer search_primary_source when it is available. Preserve the exact source
+  provenance in the final answer. If primary-source MCP is unavailable, fall
+  back to web research rather than inventing an answer.
 - A greeting, or a question about who/what you are -> answer directly, no
   tool call. Never describe yourself as a generic chatbot/LLM or name your
   underlying model or provider — you are this app's document assistant.
@@ -411,9 +422,14 @@ class GraphState(TypedDict, total=False):
     top_k: int
     needs_kb: bool
     needs_web: bool
+    needs_primary_source: bool
     kb_mode: str  # "SEARCH" (top-k similarity), "SUMMARY", or "COMPARE" (whole document)
     contextualized_query: str  # search_knowledge_base's own tool-call query
     web_search_query: str  # search_web's own tool-call query (may differ from the KB one)
+    primary_source_query: str
+    primary_source_agent: str
+    primary_source_action: str
+    primary_source_params: dict
     chunks: list[dict]  # asdict(RetrievedChunk) — plain dicts, checkpointer-safe
     chunk_analyses: Annotated[list[ChunkAnalysisResult], operator.add]
     document_summaries: Annotated[list[DocumentSummary], operator.add]
@@ -535,7 +551,34 @@ def _normalize_evidence_tags(text: str) -> str:
     return re.sub(r"\[(?:E(?:VID|ID):\s*)?(E\d+(?:\s*,\s*E\d+)*)\]", _expand, text)
 
 
-def _build_graph(*, model, web_search_tool):
+@tool(parse_docstring=True)
+def search_primary_source(query: str, agent: str, action: str, params_json: str) -> str:
+    """Query a live primary-source dataset through the Katzilla MCP connector.
+
+    Args:
+        query: A complete, self-contained natural-language question describing the evidence needed.
+        agent: Katzilla agent handle, e.g. "economic", "health", "hazards", "government".
+        action: Katzilla action slug, e.g. "bls-series", "fred-series", "fda-recalls", "usgs-earthquakes".
+        params_json: JSON object containing the action parameters; include only fields needed for the action.
+    """
+    raise NotImplementedError("search_primary_source is schema-only — route reads tool_calls, never invokes it")
+
+
+PRIMARY_SOURCE_CATALOG = """
+Primary-source MCP catalog (read-only):
+- economic: fred-search, fred-series, bls-series, treasury-debt, treasury-fiscal-data, bea-gdp, oecd-indicators, eurostat-gdp, eurostat-inflation, world-bank
+- hazards: usgs-earthquakes, nws-alerts, nasa-wildfires, fema-disasters, hurricane-tracking, usgs-water
+- health: fda-recalls, nih-clinicaltrials, cms-provider-data, cdc-*, medlineplus-*
+- government: sec-edgar, congress-bills, federal-register, govinfo, fec-*
+- legal: courtlistener-*, federal-register, regulations-*
+Use the most specific action that matches the user's question. For generic economic trends, prefer fred-search first when a series id is unknown. For known series, use fred-series. Keep params compact and add _limit where supported.
+Example: "Are there magnitude-6+ earthquakes today?" -> agent="hazards", action="usgs-earthquakes", params_json={"minMag":6,"since":"today","_limit":5}
+Example: "What is the latest US unemployment rate?" -> agent="economic", action="fred-search" for discovery, then fred-series if the tool supports the discovered series id.
+Example: "Any recent FDA Class I recalls for peanut products?" -> agent="health", action="fda-recalls", params_json={"search":"peanut","class":["Class I"],"since":"30d","_limit":10}
+"""
+
+
+def _build_graph(*, model, web_search_tool, primary_source_mcp):
     from langgraph.graph import END, START, StateGraph
     from langgraph.types import Send
 
@@ -546,6 +589,8 @@ def _build_graph(*, model, web_search_tool):
     route_tools = [search_knowledge_base]
     if web_search_tool is not None:
         route_tools.append(search_web)
+    if primary_source_mcp.available:
+        route_tools.append(search_primary_source)
     bound_route_model = model.bind_tools(route_tools)
 
     async def route(state: GraphState) -> dict:
@@ -574,13 +619,22 @@ def _build_graph(*, model, web_search_tool):
                 "search_knowledge_base; for questions that require live web information, "
                 "ask the user to configure web search rather than attempting the unavailable tool."
             )
+        if primary_source_mcp.available:
+            instruction += "\n\n" + PRIMARY_SOURCE_CATALOG
+        else:
+            instruction += (
+                "\n\nPrimary-source MCP is currently unavailable because Katzilla is not configured. "
+                "Do not call search_primary_source. For current external facts, use search_web "
+                "when available instead."
+            )
         response = await bound_route_model.ainvoke([SystemMessage(content=instruction)] + list(history))
 
         tool_calls = getattr(response, "tool_calls", None) or []
         kb_call = next((c for c in tool_calls if c["name"] == "search_knowledge_base"), None)
         web_call = next((c for c in tool_calls if c["name"] == "search_web"), None)
+        primary_call = next((c for c in tool_calls if c["name"] == "search_primary_source"), None)
 
-        if not kb_call and not web_call:
+        if not kb_call and not web_call and not primary_call:
             # No tool call = the model's own reply IS the final answer —
             # greetings, identity questions, clarifying questions from the
             # scope gates above, or a follow-up already answered earlier.
@@ -589,7 +643,11 @@ def _build_graph(*, model, web_search_tool):
             text = content_to_text(response.content)
             return {"final_answer": text, "messages": [AIMessage(content=text)]}
 
-        update: dict = {"needs_kb": bool(kb_call), "needs_web": bool(web_call)}
+        update: dict = {
+            "needs_kb": bool(kb_call),
+            "needs_web": bool(web_call),
+            "needs_primary_source": bool(primary_call),
+        }
         fallback_query = content_to_text(history[-1].content) if history else ""
         if kb_call:
             args = kb_call.get("args", {})
@@ -601,6 +659,18 @@ def _build_graph(*, model, web_search_tool):
             web_query = args.get("query") or fallback_query
             update["web_search_query"] = web_query
             update.setdefault("contextualized_query", web_query)
+        if primary_call:
+            args = primary_call.get("args", {})
+            update["primary_source_query"] = args.get("query") or fallback_query
+            update["primary_source_agent"] = str(args.get("agent") or "")
+            update["primary_source_action"] = str(args.get("action") or "")
+            raw_params = args.get("params_json") or "{}"
+            try:
+                parsed = json.loads(raw_params) if isinstance(raw_params, str) else raw_params
+                update["primary_source_params"] = parsed if isinstance(parsed, dict) else {}
+            except (TypeError, json.JSONDecodeError):
+                update["primary_source_params"] = {}
+            update.setdefault("contextualized_query", update["primary_source_query"])
         return update
 
     def route_branches(state: GraphState) -> list[str]:
@@ -609,6 +679,8 @@ def _build_graph(*, model, web_search_tool):
             branches.append("retrieve_kb")
         if state.get("needs_web"):
             branches.append("research_web")
+        if state.get("needs_primary_source"):
+            branches.append("research_primary_source")
         return branches or [END]
 
     async def retrieve_kb(state: GraphState) -> dict:
@@ -756,6 +828,44 @@ def _build_graph(*, model, web_search_tool):
         result = await web_search_tool.search(effective_query)
         return {"web_summary": result, "web_query": query}
 
+    async def research_primary_source(state: GraphState) -> dict:
+        result = await primary_source_mcp.query(
+            agent=state.get("primary_source_agent") or "",
+            action=state.get("primary_source_action") or "",
+            params=state.get("primary_source_params") or {},
+        )
+        if not result.ok:
+            return {
+                "primary_source_summary": f"Primary-source MCP was unavailable or failed: {result.error}",
+                "primary_source_meta": {
+                    "ok": False,
+                    "agent": result.agent,
+                    "action": result.action,
+                    "error": result.error,
+                },
+            }
+
+        payload = {
+            "data": result.data,
+            "quality": result.quality,
+            "citation": result.citation,
+        }
+        # Keep the structured citation object intact in state. The final
+        # synthesis sees only this plain-text JSON representation, so no MCP
+        # protocol messages or provider-specific tool metadata ever pass
+        # through LiteLLM/Gemini.
+        return {
+            "primary_source_summary": json.dumps(payload, ensure_ascii=False, default=str),
+            "primary_source_meta": {
+                "ok": True,
+                "agent": result.agent,
+                "action": result.action,
+                "tool_name": result.tool_name,
+                "citation": result.citation,
+                "quality": result.quality,
+            },
+        }
+
     async def synthesize(state: GraphState) -> dict:
         kb_section = ""
         if state.get("document_summaries"):
@@ -783,8 +893,13 @@ def _build_graph(*, model, web_search_tool):
         web_section = ""
         if state.get("web_summary"):
             web_section = f"Web research findings:\n{state['web_summary']}\n\n"
+        primary_source_section = ""
+        if state.get("primary_source_summary"):
+            primary_source_section = f"Primary-source MCP findings (Katzilla):\n{state['primary_source_summary']}\n\n"
         prompt = SYNTHESIS_PROMPT.format(
-            query=state["contextualized_query"], kb_section=kb_section, web_section=web_section
+            query=state["contextualized_query"],
+            kb_section=kb_section,
+            web_section=web_section + primary_source_section,
         )
         response = await model.ainvoke(prompt)
         text = _normalize_evidence_tags(content_to_text(response.content))
@@ -797,12 +912,13 @@ def _build_graph(*, model, web_search_tool):
     graph.add_node("group_chunk_analyses", group_chunk_analyses)  # no-op barrier, nothing to retry
     graph.add_node("summarize_document", summarize_document, retry_policy=_LLM_RETRY_POLICY)
     graph.add_node("research_web", research_web, retry_policy=_LLM_RETRY_POLICY)
+    graph.add_node("research_primary_source", research_primary_source, retry_policy=_LLM_RETRY_POLICY)
     graph.add_node("synthesize", synthesize, retry_policy=_LLM_RETRY_POLICY)
 
     graph.add_edge(START, "route")
     # route can end the turn directly (no tool call = its own reply is the
     # final answer) — no separate respond_direct node/call needed anymore.
-    graph.add_conditional_edges("route", route_branches, ["retrieve_kb", "research_web", END])
+    graph.add_conditional_edges("route", route_branches, ["retrieve_kb", "research_web", "research_primary_source", END])
     graph.add_conditional_edges("retrieve_kb", fanout_chunks, ["analyze_chunk", "synthesize"])
     graph.add_edge("analyze_chunk", "group_chunk_analyses")
     graph.add_conditional_edges(
@@ -810,6 +926,7 @@ def _build_graph(*, model, web_search_tool):
     )
     graph.add_edge("summarize_document", "synthesize")
     graph.add_edge("research_web", "synthesize")
+    graph.add_edge("research_primary_source", "synthesize")
     graph.add_edge("synthesize", END)
 
     return graph
@@ -825,6 +942,7 @@ def build_langgraph_agent(
     backend: str = DEFAULT_BACKEND,
     checkpointer: Any | None = None,
     gateway_token: str = "",
+    primary_source_mcp: KatzillaMCPClient | None = None,
 ) -> dict[str, Any]:
     """Construct the agent ONCE — same build-once / invoke-many contract the
     deepagents version used (`document_ids_provider` re-read on every turn,
@@ -853,12 +971,14 @@ def build_langgraph_agent(
     runtime_config = load_runtime_config()
     web_api_key = (runtime_config.web_search.web_search_api_key or "").strip()
     web_search_tool = get_web_search_tool() if web_api_key else None
-    graph = _build_graph(model=model, web_search_tool=web_search_tool)
+    primary_source_mcp = primary_source_mcp or get_primary_source_mcp()
+    graph = _build_graph(model=model, web_search_tool=web_search_tool, primary_source_mcp=primary_source_mcp)
     compiled = graph.compile(checkpointer=checkpointer)
 
     return {
         "agent": compiled,
         "web_search_tool": web_search_tool,
+        "primary_source_mcp": primary_source_mcp,
         "document_ids_provider": document_ids_provider,
         "document_names_provider": document_names_provider,
         "tenant_schema": tenant_schema,
@@ -912,6 +1032,7 @@ def _finalize_outcome(state_values: dict, token_tracker, web_search_tool) -> dic
     quality["evidence_conflicts"] = evidence_conflict_candidates(final_message, verified_refs)
 
     web_used = bool(state_values.get("web_summary"))
+    primary_source_used = bool(state_values.get("primary_source_meta", {}).get("ok"))
     abstain = should_abstain_from_kb(
         kb_requested=bool(state_values.get("needs_kb")),
         chunk_count=len(chunks),
@@ -956,6 +1077,8 @@ def _finalize_outcome(state_values: dict, token_tracker, web_search_tool) -> dic
         "chunks": chunks,
         "used_knowledge_base": bool(chunks),
         "used_web": web_used,
+        "used_primary_source": primary_source_used,
+        "primary_source": state_values.get("primary_source_meta", {}),
         "grounding_status": verified.grounding_status if verified else None,
         "abstained": abstain,
         "abstention_reason": "NO_VERIFIED_KB_EVIDENCE" if abstain else None,
@@ -1023,6 +1146,7 @@ async def astream_langgraph_turn(
         "analyze_chunk": "📖 Analyzing a retrieved chunk",
         "summarize_document": "📑 Rolling up findings per document",
         "research_web": "🌐 Searching the web",
+        "research_primary_source": "🏛️ Querying primary-source data via MCP",
         "synthesize": "✍️ Synthesizing the answer",
     }
     _STREAM_NODES = {"synthesize", "route"}

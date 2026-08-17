@@ -77,3 +77,6 @@ pytest-asyncio==0.26.0
 pytest-cov==6.0.0
 
 setuptools>=75
+
+# Optional primary-source MCP client (Katzilla Streamable HTTP integration).
+mcp>=2,<3

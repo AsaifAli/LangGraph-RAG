@@ -694,3 +694,10 @@ worth recording:
   `langchain-openai` is an explicit application dependency.
 - After seeding the benchmark documents, run:
   from `poc/langgraph_rag/`.
+
+
+## Optional primary-source MCP
+
+EvidenceFlow can optionally query live government/official datasets through the Katzilla MCP server. This adds a third evidence branch alongside the internal knowledge base and web research while preserving source URL, retrieval time, quality metadata, and SHA-256 data hash in the UI.
+
+Set `KATZILLA_ENABLED=true` and `KATZILLA_API_KEY=<server-side-key>` to enable it. The integration uses MCP Streamable HTTP; if the connector is unavailable, normal KB/web routing remains available.

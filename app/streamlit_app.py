@@ -1013,6 +1013,8 @@ def _meta_from_outcome(outcome: dict) -> dict:
         "abstention_reason": outcome.get("abstention_reason"),
         "used_web": outcome.get("used_web", False),
         "web_sources": outcome.get("web_sources", []),
+        "used_primary_source": outcome.get("used_primary_source", False),
+        "primary_source": outcome.get("primary_source", {}),
         "plan": outcome.get("plan", []),
     }
 
@@ -1205,6 +1207,25 @@ def _render_message_meta(meta: dict, idx: int) -> None:
             for s in sources:
                 st.markdown(f"- [{s['title'] or s['url']}]({s['url']}) — score={s['score']:.3f}")
 
+    if meta.get("used_primary_source"):
+        primary = meta.get("primary_source", {}) or {}
+        citation = primary.get("citation") or {}
+        quality = primary.get("quality") or {}
+        with st.expander("Primary-source MCP evidence", icon="🏛️", key=f"primary-src-{idx}"):
+            st.markdown(f"**Agent:** `{primary.get('agent', 'unknown')}`  \n**Action:** `{primary.get('action', 'unknown')}`")
+            if citation:
+                source_name = citation.get("source_name") or citation.get("source") or "Primary source"
+                source_url = citation.get("source_url") or citation.get("url") or ""
+                st.markdown(f"**Source:** {source_name}")
+                if source_url:
+                    st.markdown(f"**URL:** {source_url}")
+                if citation.get("retrieved_at"):
+                    st.markdown(f"**Retrieved:** {citation['retrieved_at']}")
+                if citation.get("data_hash"):
+                    st.code(str(citation["data_hash"]), language="text")
+            if quality:
+                st.caption(f"Freshness: {quality.get('freshness_seconds', 'n/a')}s · Confidence: {quality.get('confidence', 'n/a')}")
+
 
 def _record_upload(name: str, document_id: str, chunk_count: int, content_hash: str | None = None) -> None:
     """GLOBAL upload record (sidebar uploader only — see module docstring).
@@ -1271,6 +1292,7 @@ def _run_status_check() -> dict:
         "qdrant_ok": qdrant_ok,
         "qdrant_error": qdrant_error,
         "web_search_configured": bool((config.web_search.web_search_api_key or "").strip()),
+        "katzilla_configured": bool(os.environ.get("KATZILLA_API_KEY", "").strip()) and os.environ.get("KATZILLA_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"},
     }
 
 
@@ -1454,7 +1476,8 @@ with st.sidebar:
         f'<div class="doc-chip">{_icon("search" if _status["qdrant_ok"] else "search-off", size=15)}'
         f'Qdrant: {"connected" if _status["qdrant_ok"] else _status["qdrant_error"]}</div>'
         f'<div class="doc-chip">{_icon("world", size=15)}'
-        f'Web search: {"configured" if _status["web_search_configured"] else "not configured"}</div>',
+        f'Web search: {"configured" if _status["web_search_configured"] else "not configured"}</div>'
+        f'<div class="doc-chip">🏛️ Primary-source MCP: {"configured" if _status.get("katzilla_configured") else "not configured"}</div>',
         unsafe_allow_html=True,
     )
 
