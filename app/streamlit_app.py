@@ -81,6 +81,7 @@ import asyncio
 import hashlib
 import html as html_lib
 import json
+import os
 import re
 import sys
 import uuid
