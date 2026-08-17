@@ -166,6 +166,15 @@ st.set_page_config(
     layout="centered",
 )
 
+# Portfolio handoff: accept the temporary gateway JWT from the portfolio launch URL.
+portfolio_token = str(st.query_params.get("portfolio_llm_session", "")).strip()
+if portfolio_token:
+    st.session_state.llm_gateway_session_token = portfolio_token
+    try:
+        del st.query_params["portfolio_llm_session"]
+    except Exception:
+        pass
+
 # --- Appearance ------------------------------------------------------------
 # Follows Streamlit's OWN light/dark setting (⋮ menu -> Settings -> Theme)
 # automatically — there used to also be a manual override selectbox here,
