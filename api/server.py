@@ -224,9 +224,9 @@ async def chat_stream(
         raise HTTPException(status_code=413, detail="query is too long")
 
     built = await _ensure_agent(token)
-    ctx = _active_thread.set(request.thread_id)
 
     async def events() -> AsyncIterator[str]:
+        ctx = _active_thread.set(request.thread_id)
         try:
             async for event in astream_langgraph_turn(
                 built, request.query.strip(), thread_id=request.thread_id
