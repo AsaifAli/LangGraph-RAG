@@ -1174,6 +1174,8 @@ def build_langchain_model(backend: str, *, gateway_token: str = ""):
             base_url=_get_env("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"),
             api_key=api_key,
             temperature=0,
+            timeout=120.0,
+            max_retries=5,
         )
 
     if backend == "litellm":
@@ -1235,6 +1237,8 @@ def build_langchain_model(backend: str, *, gateway_token: str = ""):
             base_url=gateway_url or "http://litellm:4000/v1",
             api_key=gateway_token or _get_env("LLM_GATEWAY_API_KEY", ""),
             temperature=0,
+            timeout=120.0,
+            max_retries=5,
         )
 
     if backend == "vllm":
