@@ -18,7 +18,7 @@ __pycache__/
 .pytest_cache/
 .coverage
 htmlcov/
-
+node_modules/
 # Local model/cache data
 .cache/
 models/
@@ -30,3 +30,5 @@ evaluation/results/*.jsonl
 # Bundled snapshots / archives
 POC.zip
 *.zip
+web/dist/
+*.tsbuildinfo
