@@ -5,7 +5,7 @@ services:
     dockerfilePath: ./Dockerfile.render
     dockerContext: .
     plan: free
-    healthCheckPath: /healthz
+    healthCheckPath: /_stcore/health
     envVars:
       - key: RETRIEVAL_BACKEND
         value: qdrant-cloud

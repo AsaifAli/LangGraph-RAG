@@ -1,25 +1,28 @@
-# --- Frontend build ---
-FROM node:22-bookworm-slim AS web-build
-WORKDIR /src/web
-COPY web/package.json web/package-lock.json* ./
-RUN npm install
-COPY web/ ./
-RUN npm run build
-
-# --- Python runtime ---
 FROM python:3.12-slim
-RUN apt-get update && apt-get install -y --no-install-recommends libreoffice-writer curl && rm -rf /var/lib/apt/lists/*
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libreoffice-writer curl \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
+
 COPY requirements-render.txt .
 RUN pip install --no-cache-dir -r requirements-render.txt
+
 COPY . .
-COPY --from=web-build /src/web/dist /app/web/dist
 RUN mkdir -p chat_history
+
 ENV RETRIEVAL_BACKEND=qdrant-cloud
 ENV RERANK_BACKEND=jina
 ENV HOSTED_DENSE_MODEL=sentence-transformers/all-MiniLM-L6-v2
 ENV HOSTED_SPARSE_MODEL=Qdrant/bm25
 ENV HOSTED_DENSE_VECTOR_SIZE=384
-EXPOSE 10000
-HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 CMD curl -f http://127.0.0.1:${PORT:-10000}/healthz || exit 1
-CMD ["sh","-c","uvicorn api.server:app --host 0.0.0.0 --port ${PORT:-10000}"]
+ENV STREAMLIT_SERVER_HEADLESS=true
+ENV STREAMLIT_SERVER_ADDRESS=0.0.0.0
+
+EXPOSE 8501
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
+    CMD curl -f http://127.0.0.1:${PORT:-8501}/_stcore/health || exit 1
+
+CMD ["sh", "-c", "streamlit run app/streamlit_app.py --server.port=${PORT:-8501} --server.address=0.0.0.0 --server.headless=true"]
