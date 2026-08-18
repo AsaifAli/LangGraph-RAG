@@ -63,6 +63,8 @@ function Icon({ name, size = 18 }: { name: string; size?: number }) {
     external: <><path d="M14 5h5v5"/><path d="m19 5-8 8"/><path d="M19 13v5H6V6h5"/></>,
     check: <path d="m5 12 4 4L19 6"/>,
     menu: <><path d="M4 6h16M4 12h16M4 18h16"/></>,
+    arrow: <><path d="M5 12h13"/><path d="m13 6 6 6-6 6"/></>,
+    file: <><path d="M6 3h8l4 4v14H6z"/><path d="M14 3v5h5"/><path d="M9 13h6M9 17h6"/></>,
   };
   return <svg {...common}>{p[name] ?? p.check}</svg>;
 }
@@ -118,7 +120,7 @@ function App() {
   const [showSaved, setShowSaved] = useState(false);
   const [saved, setSaved] = useState<Evidence[]>(() => JSON.parse(localStorage.getItem("evidenceflow_saved") || "[]"));
   const [uploading, setUploading] = useState<string[]>([]);
-  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(() => window.innerWidth > 1100);
   const [rightOpen, setRightOpen] = useState(true);
   const [autoScroll, setAutoScroll] = useState(true);
   const abortRef = useRef<AbortController | null>(null);
@@ -139,11 +141,19 @@ function App() {
 
   async function validateSession() {
     if (!token) { setSession({ status: "missing" }); return; }
-    try { setSession(await api<Session>("/api/session")); }
-    catch { setSession({ status: "expired" }); }
+    try {
+      const next = await api<Session>("/api/session");
+      setSession(next);
+    } catch (error: any) {
+      const message = String(error?.message || "");
+      setSession(message.toLowerCase().includes("expired") ? { status: "expired" } : { status: "error" });
+    }
   }
   async function refreshChats() { try { const r = await api<{chats: Chat[]}>("/api/chats"); setChats(r.chats); } catch (error) { console.debug("EvidenceFlow refresh failed", error); } }
-  async function loadThread(id: string) { try { const r = await api<any>(`/api/chats/${encodeURIComponent(id)}`); setMessages(r.messages || []); setThreadId(id); sessionStorage.setItem(THREAD_KEY, id); setDocs(await api(`/api/documents?thread_id=${encodeURIComponent(id)}`)); } catch (e: any) { showNotice("error", e.message || "Could not load chat"); } }
+  async function loadThread(id: string) {
+    abortRef.current?.abort(); setBusy(false); setStreamingText("");
+    try { const r = await api<any>(`/api/chats/${encodeURIComponent(id)}`); setMessages(r.messages || []); setThreadId(id); sessionStorage.setItem(THREAD_KEY, id); setDocs(await api(`/api/documents?thread_id=${encodeURIComponent(id)}`)); setSelectedEvidence(null); setRightOpen(true); setSidebarOpen(window.innerWidth > 1100); } catch (e: any) { showNotice("error", e.message || "Could not load chat"); }
+  }
   async function refreshDocs(id = threadId) { try { setDocs(await api(`/api/documents?thread_id=${encodeURIComponent(id)}`)); } catch (error) { console.debug("EvidenceFlow refresh failed", error); } }
   async function refreshStatus() { try { setStatus(await api<Status>("/api/status")); } catch (error) { console.debug("EvidenceFlow refresh failed", error); } }
 
@@ -152,7 +162,9 @@ function App() {
   useEffect(() => { if (!token) return; const t = window.setInterval(validateSession, 30000); return () => window.clearInterval(t); }, [token]);
 
   async function newChat() {
-    try { const r = await api<Chat>("/api/chats", { method: "POST" }); setThreadId(r.thread_id); sessionStorage.setItem(THREAD_KEY, r.thread_id); setMessages([]); setDocs({ global: docs.global, chat: [] }); setSelectedEvidence(null); setStreamingText(""); await refreshChats(); showNotice("success", "New research thread created"); } catch (e: any) { showNotice("error", e.message); }
+    abortRef.current?.abort();
+    setBusy(false); setStreamingText("");
+    try { const r = await api<Chat>("/api/chats", { method: "POST" }); setThreadId(r.thread_id); sessionStorage.setItem(THREAD_KEY, r.thread_id); setMessages([]); setDocs({ global: docs.global, chat: [] }); setSelectedEvidence(null); setRightOpen(true); setStreamingText(""); setSidebarOpen(window.innerWidth > 1100); await refreshChats(); showNotice("success", "New research thread created"); } catch (e: any) { showNotice("error", e.message); }
   }
   async function deleteChat(id: string) {
     if (!confirm("Delete this chat and its attached document vectors?")) return;
@@ -194,7 +206,7 @@ function App() {
     let final: any = null; let accumulated = "";
     try {
       const res = await fetch(`${API}/api/chat/stream`, { method: "POST", headers: { ...authHeaders, "Content-Type": "application/json" }, body: JSON.stringify({ thread_id: threadId, query: modeInstruction(q) }), signal: controller.signal });
-      if (res.status === 401) throw new Error("BYOK session expired. Return to the portfolio to start a new session.");
+      if (res.status === 401) { setSession({ status: "expired" }); throw new Error("BYOK session expired. Return to the portfolio to start a new session."); }
       if (!res.ok) throw new Error(await res.text());
       const reader = res.body?.getReader(); if (!reader) throw new Error("Streaming is unavailable.");
       const decoder = new TextDecoder(); let buffer = "";
@@ -219,14 +231,14 @@ function App() {
     finally { abortRef.current = null; setBusy(false); setStreamingText(""); }
   }
 
-  function copy(text: string) { navigator.clipboard.writeText(text).then(() => showNotice("success", "Answer copied")); }
+  function copy(text: string) { navigator.clipboard.writeText(text).then(() => showNotice("success", "Answer copied")).catch(() => showNotice("error", "Copy failed")); }
   function saveEvidence(e: Evidence) { const next = saved.some(x => x.evidence_id === e.evidence_id) ? saved : [...saved, e]; setSaved(next); localStorage.setItem("evidenceflow_saved", JSON.stringify(next)); showNotice("success", "Evidence saved"); }
   function exportBrief() { const lines = ["# EvidenceFlow research brief", "", `Thread: ${threadId}`, "", ...messages.map(m => `${m.role.toUpperCase()}: ${m.content}\n${m.meta?.quality ? `Grounding: ${m.meta.quality.quality_label || m.meta.grounding_status || "N/A"}` : ""}`)]; const blob = new Blob([lines.join("\n\n")], { type: "text/markdown" }); const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download="evidenceflow-research-brief.md"; a.click(); URL.revokeObjectURL(a.href); }
 
   const allMessages = messages;
   const latestMeta = [...messages].reverse().find(m => m.role === "assistant" && m.meta)?.meta;
   const evidenceMap = new Map<string, Evidence>();
-  (latestMeta?.chunks || []).forEach((e) => { if (e.evidence_id) evidenceMap.set(e.evidence_id, e); });
+  (latestMeta?.chunks || []).forEach((e: Evidence) => { if (e.evidence_id) evidenceMap.set(e.evidence_id, e); });
   const latestWeb = latestMeta?.web_sources || [];
   const latestPrimary = latestMeta?.primary_source;
   const latestPlan = latestMeta?.plan || [];
@@ -252,15 +264,15 @@ function App() {
       <div className="brand"><div className="brand-mark">EF</div><div><div className="brand-title">EvidenceFlow</div><div className="brand-sub">Verified RAG & Research</div></div></div>
       <div className="top-actions"><span className={`session-pill ${session.status}`}>{session.status === "active" ? "BYOK session active" : session.status === "expired" ? "BYOK session expired" : session.status === "validating" ? "Validating session…" : "BYOK session required"}</span><button className="ghost-btn" onClick={() => setSidebarOpen(v=>!v)}><Icon name="menu"/></button><button className="ghost-btn" onClick={newChat}>New thread</button></div>
     </header>
-    <div className="workspace">
-      <aside className={`sidebar ${sidebarOpen ? "open" : ""}`}>
+    <div className={`workspace ${sidebarOpen ? "" : "sidebar-collapsed"} ${rightOpen ? "" : "evidence-collapsed"}`}>
+      <aside className={`sidebar ${sidebarOpen ? "open" : "closed"}`}>
         <div className="side-top"><div className="side-title">Research</div><button className="icon-btn" onClick={newChat}><Icon name="plus" size={16}/></button></div>
         <div className="chat-history">
           {chats.map(c => <div className={`chat-row ${c.thread_id === threadId ? "active" : ""}`} key={c.thread_id}><button className="chat-open" onClick={() => loadThread(c.thread_id)}><span className="chat-title">{c.title}</span><span className="chat-count">{c.message_count || 0} messages</span></button><button className="icon-btn danger" onClick={() => deleteChat(c.thread_id)}><Icon name="trash" size={15}/></button></div>)}
           {!chats.length && <div className="muted">No saved chats yet.</div>}
         </div>
-        <section className="side-section"><div className="side-title">Documents · all chats</div><label className="upload-btn"><Icon name="upload" size={15}/><span>Add global document</span><input type="file" multiple hidden onChange={e => [...(e.target.files||[])].forEach(f=>upload(f,"global"))}/></label>{docs.global.map(d => <div className="doc-row" key={d.document_id}><button onClick={()=>setSelectedEvidence({document_id:d.document_id, content:d.name})}><Icon name="save" size={14}/><span>{d.name}</span></button><button className="icon-btn danger" onClick={()=>removeDoc(d,"global")}><Icon name="trash" size={14}/></button></div>)}</section>
-        <section className="side-section"><div className="side-title">Documents · this chat</div><label className="upload-btn secondary"><Icon name="upload" size={15}/><span>Attach to this chat</span><input type="file" multiple hidden onChange={e => [...(e.target.files||[])].forEach(f=>upload(f,"chat"))}/></label>{docs.chat.length ? docs.chat.map(d => <div className="doc-row" key={d.document_id}><button onClick={()=>setSelectedEvidence({document_id:d.document_id, content:d.name})}><Icon name="file" size={14}/><span>{d.name}</span></button><button className="icon-btn danger" onClick={()=>removeDoc(d,"chat")}><Icon name="trash" size={14}/></button></div>) : <div className="muted">None attached in this chat.</div>}</section>
+        <section className="side-section"><div className="side-title">Documents · all chats</div><label className="upload-btn"><Icon name="upload" size={15}/><span>Add global document</span><input type="file" multiple hidden onChange={e => [...(e.target.files||[])].forEach(f=>upload(f,"global"))}/></label>{docs.global.map(d => <div className="doc-row" key={d.document_id}><button onClick={()=>{setSelectedEvidence({document_id:d.document_id, content:d.name}); setRightOpen(true)}}><Icon name="save" size={14}/><span>{d.name}</span></button><button className="icon-btn danger" onClick={()=>removeDoc(d,"global")}><Icon name="trash" size={14}/></button></div>)}</section>
+        <section className="side-section"><div className="side-title">Documents · this chat</div><label className="upload-btn secondary"><Icon name="upload" size={15}/><span>Attach to this chat</span><input type="file" multiple hidden onChange={e => [...(e.target.files||[])].forEach(f=>upload(f,"chat"))}/></label>{docs.chat.length ? docs.chat.map(d => <div className="doc-row" key={d.document_id}><button onClick={()=>{setSelectedEvidence({document_id:d.document_id, content:d.name}); setRightOpen(true)}}><Icon name="file" size={14}/><span>{d.name}</span></button><button className="icon-btn danger" onClick={()=>removeDoc(d,"chat")}><Icon name="trash" size={14}/></button></div>) : <div className="muted">None attached in this chat.</div>}</section>
         <section className="side-section"><div className="side-title">System</div><div className="status-grid"><span className={status?.qdrant_ok ? "ok-dot" : "bad-dot"}>Qdrant {status?.qdrant_ok ? "connected" : "offline"}</span><span>{status?.web_search_configured ? "Web search configured" : "Web search unavailable"}</span><span>{status?.primary_source_configured ? "Primary-source MCP configured" : "Primary-source MCP unavailable"}</span></div><button className="secondary-action" onClick={refreshStatus}>Recheck connectivity</button><button className="secondary-action" onClick={clearAll}>Clear everything</button></section>
       </aside>
 
@@ -270,16 +282,16 @@ function App() {
         {showSaved && <div className="saved-strip">{saved.length ? saved.map(e => <button key={e.evidence_id} onClick={()=>setSelectedEvidence(e)} className="saved-card"><span>{e.evidence_id}</span><span>{(e.content||"").slice(0,120)}…</span></button>) : <span className="muted">No saved evidence yet.</span>}</div>}
         <section className="messages">
           {!allMessages.length && <div className="empty-state"><div className="empty-badge"><Icon name="search" size={18}/></div><h2>Start a research turn</h2><p>Try comparing two documents, asking for the strongest supported conclusion, or finding contradictions across your sources.</p><div className="prompt-grid">{["Summarize the uploaded evidence", "Compare the strongest supported conclusions", "Find contradictions in the source set"].map(p => <button key={p} onClick={()=>setComposer(p)}>{p}<Icon name="arrow" size={15}/></button>)}</div></div>}
-          {allMessages.map((m, i) => <article className={`message ${m.role} ${m.notice ? "notice" : ""}`} key={`${i}-${m.content.slice(0,8)}`}><div className="avatar">{m.role === "user" ? "You" : "EF"}</div><div className="bubble-wrap"><div className="bubble">{m.role === "assistant" ? <AnswerRenderer text={m.content} evidenceMap={evidenceMap} onEvidence={(id)=>{setSelectedEvidence(evidenceMap.get(id) || {evidence_id:id, content:"Evidence unavailable in the current scope."}); setRightOpen(true)}} onHover={setHighlightedEvidence}/> : <div className="answer-text">{m.content}</div>}{m.role === "assistant" && m.meta && renderMeta(m.meta)}{m.role === "assistant" && m.meta && <div className="answer-actions"><button className="icon-btn" title="Copy" onClick={()=>copy(m.content)}><Icon name="copy" size={15}/></button>{i===allMessages.length-1 && <button className="icon-btn" title="Regenerate" onClick={()=>send(allMessages[i-1]?.content || "", true)}><Icon name="rotate" size={15}/></button>}</div>}</div></div></article>)}
+          {allMessages.map((m, i) => <article className={`message ${m.role} ${m.notice ? "notice" : ""}`} key={`${m.role}-${i}`}><div className="avatar">{m.role === "user" ? "You" : "EF"}</div><div className="bubble-wrap"><div className="bubble">{m.role === "assistant" ? <AnswerRenderer text={m.content} evidenceMap={evidenceMap} onEvidence={(id)=>{setSelectedEvidence(evidenceMap.get(id) || {evidence_id:id, content:"Evidence unavailable in the current scope."}); setRightOpen(true)}} onHover={setHighlightedEvidence}/> : <div className="answer-text">{m.content}</div>}{m.role === "assistant" && m.meta && renderMeta(m.meta)}{m.role === "assistant" && m.meta && <div className="answer-actions"><button className="icon-btn" title="Copy" onClick={()=>copy(m.content)}><Icon name="copy" size={15}/></button>{i===allMessages.length-1 && <button className="icon-btn" title="Regenerate" onClick={()=>send(allMessages[i-1]?.content || "", true)}><Icon name="rotate" size={15}/></button>}</div>}</div></div></article>)}
           {busy && <div className="streaming"><div className="avatar">EF</div><div className="streaming-card"><span className="typing-dot"/><span className="typing-dot"/><span className="typing-dot"/><span className="streaming-text">{notice?.text || "Working…"}</span></div></div>}
           <div ref={endRef}/>
         </section>
         <div className="composer"><textarea value={composer} onChange={e=>setComposer(e.target.value)} onKeyDown={e=>{if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();send();}}} placeholder={session.status === "active" ? "Message the assistant, or attach a document to add it to the knowledge base…" : "Launch this app from the portfolio to activate BYOK."}/><div className="composer-row"><span className="composer-hint">Enter to send · Shift+Enter for new line</span><div><button className="ghost-btn" onClick={()=>setAutoScroll(v=>!v)}>{autoScroll ? "Auto-scroll on" : "Auto-scroll off"}</button><button className="send-btn" disabled={busy || session.status!=="active" || !composer.trim()} onClick={()=>send()}>{busy ? "Working…" : "Send"}</button></div></div></div>
       </main>
 
-      <aside className={`evidence-panel ${rightOpen ? "" : "closed"}`}>
-        <div className="panel-head"><div><div className="side-title">Verified evidence</div><div className="panel-sub">Claim → evidence → source</div></div><button className="icon-btn" onClick={()=>setRightOpen(v=>!v)}><Icon name="close" size={16}/></button></div>
-        {selectedEvidence ? <div className="selected-evidence"><div className="evidence-kicker">{selectedEvidence.evidence_id || "Document"}</div><h3>{selectedEvidence.document_id || "Source"}</h3><p>{selectedEvidence.content}</p><div className="selected-actions"><button className="secondary-action" onClick={()=>saveEvidence(selectedEvidence)}><Icon name="save" size={14}/> Save evidence</button><button className="secondary-action" onClick={()=>setComposer(`Explain this evidence in the context of my question: ${selectedEvidence.content || ""}`)}>Ask about evidence</button><button className="secondary-action" onClick={()=>setComposer(`Challenge this evidence and look for contradicting sources: ${selectedEvidence.content || ""}`)}>Challenge evidence</button></div></div> : <div className="empty-evidence"><div className="empty-badge"><Icon name="shield" size={17}/></div><h3>Evidence will appear here</h3><p>Hover or click inline citation chips to inspect the exact passage used to support an answer.</p></div>}
+      <aside className={`evidence-panel ${rightOpen ? "open" : "closed"}`}>
+        <div className="panel-head"><div><div className="side-title">Verified evidence</div><div className="panel-sub">Claim → evidence → source</div></div><button className="icon-btn" title="Close evidence panel" aria-label="Close evidence panel" onClick={()=>setRightOpen(false)}><Icon name="close" size={16}/></button></div>
+        {selectedEvidence ? <div className="selected-evidence"><div className="evidence-kicker">{selectedEvidence.evidence_id || "Document"}</div><h3>{selectedEvidence.document_id || "Source"}</h3><p>{selectedEvidence.content}</p><div className="selected-actions"><button className="secondary-action" onClick={()=>saveEvidence(selectedEvidence)}><Icon name="save" size={14}/> Save evidence</button><button className="secondary-action" onClick={()=>setComposer(`Explain this evidence in the context of my question: ${selectedEvidence.content || ""}`)}>Ask about evidence</button><button className="secondary-action" onClick={()=>setComposer(`Challenge this evidence and look for contradicting sources: ${selectedEvidence.content || ""}`)}>Challenge evidence</button><button className="secondary-action subtle" onClick={()=>setRightOpen(false)}>Close panel</button></div></div> : <div className="empty-evidence"><div className="empty-badge"><Icon name="shield" size={17}/></div><h3>Evidence will appear here</h3><p>Hover or click inline citation chips to inspect the exact passage used to support an answer.</p></div>}
         {latestMeta?.used_knowledge_base && <section className="panel-section"><div className="side-title">Cited evidence</div>{(latestMeta.chunks||[]).map(e => <CitationPopover key={e.evidence_id} evidence={e} active={highlightedEvidence===e.evidence_id} onHover={setHighlightedEvidence} onOpen={()=>{setSelectedEvidence(e);setRightOpen(true)}}/>)}</section>}
         {latestMeta?.used_web && <section className="panel-section"><button className="section-toggle" onClick={()=>setShowSources(v=>!v)}><span><Icon name="globe" size={15}/> Web sources ({latestWeb.length})</span><span>{showSources ? "−" : "+"}</span></button>{showSources && latestWeb.map((s,i)=><a key={i} className="source-link" href={s.url} target="_blank" rel="noreferrer"><span>{s.title || s.url}</span><span>{typeof s.score === "number" ? s.score.toFixed(3) : ""}</span></a>)}</section>}
         {latestMeta?.used_primary_source && latestPrimary && <section className="panel-section"><div className="side-title">Primary-source MCP</div><div className="primary-card"><div><strong>{latestPrimary.agent || "unknown agent"}</strong> · {latestPrimary.action || "action"}</div>{latestPrimary.citation?.source_name && <div>Source: {latestPrimary.citation.source_name}</div>}{latestPrimary.citation?.source_url && <a href={latestPrimary.citation.source_url} target="_blank" rel="noreferrer">Open source ↗</a>}{latestPrimary.quality && <div>Freshness {latestPrimary.quality.freshness_seconds ?? "n/a"}s · Confidence {latestPrimary.quality.confidence ?? "n/a"}</div>}</div></section>}
@@ -288,7 +300,7 @@ function App() {
     </div>
     {uploading.length > 0 && <div className="upload-overlay"><div className="upload-card"><div className="spinner"/><div><strong>Indexing documents</strong><span>{uploading.join(", ")}</span></div></div></div>}
     {notice && <div className={`toast ${notice.kind}`}>{notice.text}</div>}
-    {session.status !== "active" && <div className="session-banner"><div><strong>{session.status === "expired" ? "Your BYOK session has expired." : session.status === "missing" ? "BYOK session required." : "Validating BYOK session…"}</strong><span>{session.status === "active" ? "" : "Launch EvidenceFlow from the portfolio after entering your provider key."}</span></div>{session.status !== "validating" && <a href="https://asaifali-portfolio.vercel.app">Return to portfolio</a>}</div>}
+    {session.status !== "active" && <div className="session-banner"><div><strong>{session.status === "expired" ? "Your BYOK session has expired." : session.status === "missing" ? "BYOK session required." : session.status === "error" ? "Could not validate BYOK session." : "Validating BYOK session…"}</strong><span>{session.status === "active" ? "" : "Launch EvidenceFlow from the portfolio after entering your provider key."}</span></div>{session.status !== "validating" && <a href="https://asaifali-portfolio.vercel.app">Return to portfolio</a>}</div>}
   </div>;
 }
 
