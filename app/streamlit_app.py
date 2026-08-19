@@ -1688,14 +1688,31 @@ def _render_evidence_panel() -> None:
         return
 
     st.markdown('<div class="ef-evidence-open"></div>', unsafe_allow_html=True)
-    header_col, close_col = st.columns([5, 1])
+    header_col, close_col = st.columns([8, 1])
+
     with header_col:
-        st.markdown('<div class="ef-evidence-title">Verified evidence</div>', unsafe_allow_html=True)
-        grounding = meta.get("grounding_status") or ("Abstained" if meta.get("abstained") else "Grounded")
-        st.markdown(f'<div class="ef-evidence-sub">Claim → evidence → source · <strong>{html_lib.escape(str(grounding))}</strong></div>', unsafe_allow_html=True)
+        st.markdown(
+            '<div class="ef-evidence-title">Verified evidence</div>',
+            unsafe_allow_html=True,
+        )
+        grounding = meta.get("grounding_status") or (
+            "Abstained" if meta.get("abstained") else "Grounded"
+        )
+        st.markdown(
+            f'<div class="ef-evidence-sub">Claim → evidence → source · '
+            f'<strong>{html_lib.escape(str(grounding))}</strong></div>',
+            unsafe_allow_html=True,
+        )
+
     with close_col:
-        if st.button("Close", icon=":material/close:", help="Close evidence workspace", key="close-evidence-panel"):
-            st.session_state.evidence_open=False
+        if st.button(
+            "",
+            icon=":material/close:",
+            help="Close evidence workspace",
+            key="close-evidence-panel",
+            use_container_width=True,
+        ):
+            st.session_state.evidence_open = False
             st.rerun()
 
     cited=set(meta.get("cited_evidence_ids") or [])
