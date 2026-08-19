@@ -135,16 +135,35 @@ div[data-testid="stBottom"] {{
   box-shadow:none!important;
 }}
 div[data-testid="stBottomBlockContainer"] {{
-  padding:0.75rem clamp(0.75rem,3vw,3rem) 1rem!important;
+  padding:0.75rem 1rem 1rem!important;
 }}
 [data-testid="stChatInput"]>div {{
-  width:min(1120px,100%)!important;
+  width:calc(100% - 2rem)!important;
+  max-width:none!important;
   margin:0 auto!important;
   border:1px solid var(--ef-input-border)!important;
   background:var(--ef-composer)!important;
   box-shadow:0 16px 42px color-mix(in srgb,#0f172a 10%,transparent)!important;
   border-radius:18px!important;
   backdrop-filter:blur(16px);
+  min-height:64px!important;
+}}
+
+[data-testid="stChatInput"] textarea {{
+  min-height:52px!important;
+  padding-top:14px!important;
+  padding-bottom:14px!important;
+  font-size:15px!important;
+  line-height:1.5!important;
+}}
+
+[data-testid="stChatInput"] button {{
+  width:42px!important;
+  height:42px!important;
+  min-width:42px!important;
+  min-height:42px!important;
+  margin-right:8px!important;
+  border-radius:12px!important;
 }}
 [data-testid="stChatInput"] textarea,[data-testid="stChatInput"] input {{
   background:transparent!important; box-shadow:none!important; color:var(--ef-text)!important;
@@ -209,7 +228,55 @@ div[data-testid="stExpander"],div[data-testid="stForm"],div[data-testid="stMetri
   box-shadow:0 8px 28px color-mix(in srgb,#0f172a 7%,transparent);margin-bottom:.8rem;
 }}
 [data-testid="stChatMessage"] p,[data-testid="stChatMessage"] li,[data-testid="stChatMessage"] span {{color:var(--ef-text)!important;}}
+/* --- Conversation content spacing refinement --- */
 
+[data-testid="stChatMessage"] {{
+  padding: 1.05rem 1.1rem 1.15rem !important;
+}}
+
+[data-testid="stChatMessage"] [data-testid="stExpander"] {{
+  margin: 0.85rem 0.25rem 0.35rem !important;
+  border-radius: 14px !important;
+  overflow: hidden !important;
+}}
+
+[data-testid="stChatMessage"] [data-testid="stExpander"] > details > summary {{
+  padding: 0.7rem 0.9rem !important;
+}}
+
+[data-testid="stChatMessage"] [data-testid="stExpander"] > details > div {{
+  padding: 0.45rem 0.95rem 0.85rem !important;
+}}
+
+/* Web-source expanders get a little more visual separation from the bubble edge. */
+[data-testid="stChatMessage"] [class*="st-key-web-src-"] {{
+  margin-left: 0.3rem !important;
+  margin-right: 0.3rem !important;
+  margin-top: 0.9rem !important;
+  margin-bottom: 0.45rem !important;
+}}
+
+/* Give small action-button rows some breathing room. */
+[data-testid="stChatMessage"] .stButton {{
+  margin-top: 0.45rem !important;
+}}
+
+[data-testid="stChatMessage"] .stButton > button {{
+  min-height: 36px !important;
+  padding: 0.2rem 0.65rem !important;
+}}
+
+/* Keep the evidence/citation content from pressing against the card edges. */
+.citation-row,
+.citation-row-kb {{
+  margin: 0.55rem 0.2rem 0.35rem !important;
+}}
+
+/* Slightly more separation for token/QA metadata. */
+[data-testid="stChatMessage"] [data-testid="stCaptionContainer"] {{
+  margin-left: 0.2rem !important;
+  margin-right: 0.2rem !important;
+}}
 .ui-product-bar {{
   display:flex;align-items:center;gap:.7rem;margin:0 0 .9rem;padding:.68rem .85rem;border:1px solid var(--ef-border);border-radius:14px;
   background:linear-gradient(135deg,color-mix(in srgb,var(--ef-accent) 9%,var(--ef-surface)),var(--ef-surface));
