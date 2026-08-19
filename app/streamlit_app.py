@@ -1694,7 +1694,7 @@ def _render_evidence_panel() -> None:
         grounding = meta.get("grounding_status") or ("Abstained" if meta.get("abstained") else "Grounded")
         st.markdown(f'<div class="ef-evidence-sub">Claim → evidence → source · <strong>{html_lib.escape(str(grounding))}</strong></div>', unsafe_allow_html=True)
     with close_col:
-        if st.button("", icon="✕", help="Close evidence workspace", key="close-evidence-panel"):
+        if st.button("Close", icon=":material/close:", help="Close evidence workspace", key="close-evidence-panel"):
             st.session_state.evidence_open=False
             st.rerun()
 
