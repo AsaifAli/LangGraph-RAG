@@ -1134,6 +1134,19 @@ _CITATION_CHIP_COLORS = {
 }
 
 
+def _effective_theme() -> str:
+    """Return the current Streamlit theme type for server-rendered widgets.
+
+    The visual shell can switch live via CSS/media queries, while server-side
+    generated markup such as citation chips needs a concrete palette at each
+    script run. Streamlit exposes the active theme as `st.context.theme.type`.
+    """
+    try:
+        return (st.context.theme.type or "light").lower()
+    except Exception:
+        return "light"
+
+
 def _render_citation_chips(
     chunks: list, *, grounding_status: str | None, cited_evidence_ids: list[str] | None = None
 ) -> None:
