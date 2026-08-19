@@ -107,6 +107,7 @@ if str(_POC_ROOT) not in sys.path:
     sys.path.insert(0, str(_POC_ROOT))
 
 from agents.custom_langgraph_poc import astream_langgraph_turn, build_langgraph_agent  # noqa: E402
+from citations.verifier import verify_reference  # noqa: E402
 from retrieval.rag_pipeline import (  # noqa: E402
     DEFAULT_BACKEND,
     DEFAULT_TURN_TIMEOUT_SECONDS,
@@ -163,7 +164,21 @@ _ROBOT_ICON_PATH = _ICONS_DIR / "robot.svg"
 st.set_page_config(
     page_title="Document Research Assistant",
     page_icon=str(_ROBOT_ICON_PATH) if _ROBOT_ICON_PATH.exists() else "🤖",
-    layout="centered",
+    layout="wide",
+)
+
+# Shared visual layer. The browser/system appearance drives the visual CSS live;
+# Streamlit's theme type is retained only as a first-render fallback for server-side
+# components. No rerun is required for the visual palette to switch.
+
+from ui_theme import apply_theme  # noqa: E402
+_theme_mode = st.context.theme.type or "light"
+apply_theme(
+    product="EvidenceFlow",
+    subtitle="Verified RAG & research workspace",
+    accent="#7C3AED",
+    accent2="#2563EB",
+    theme=_theme_mode,
 )
 
 # Portfolio handoff: accept the temporary gateway JWT from the portfolio launch URL.
@@ -175,42 +190,16 @@ if portfolio_token:
     except Exception:
         pass
 
-# --- Appearance ------------------------------------------------------------
-# Follows Streamlit's OWN light/dark setting (⋮ menu -> Settings -> Theme)
-# automatically — there used to also be a manual override selectbox here,
-# removed after real feedback that it wasn't worth keeping: there is no
-# supported runtime API to change Streamlit's own base chrome from inside a
-# running script (`st.context.theme` is deliberately read-only), so the
-# override only ever affected THIS file's own custom-styled elements
-# (header, cards, citation chips) — a user picking "Light" while their
-# actual Streamlit theme was Dark got a real, confusing mismatch rather
-# than a working theme switch. Automatic-only avoids that mismatch
-# entirely: everything here always matches whatever Streamlit itself is
-# already rendering in.
-def _effective_theme() -> str:
-    return st.context.theme.type or "light"
-
-
 # --- Global styling ------------------------------------------------------
-# Theme-aware via `_effective_theme()` (see its docstring above) rather
-# than a single hardcoded palette — recomputed fresh on every script rerun,
-# so changing the sidebar's Appearance toggle takes effect immediately.
-_theme_mode = _effective_theme()
-if _theme_mode == "dark":
-    _card_bg, _card_border = "rgba(99, 102, 241, 0.14)", "rgba(99, 102, 241, 0.38)"
-    _fg_primary, _fg_muted = "#e6edf1", "rgba(230, 237, 241, 0.68)"
-else:
-    _card_bg, _card_border = "rgba(99, 102, 241, 0.06)", "rgba(99, 102, 241, 0.18)"
-    _fg_primary, _fg_muted = "#1a2226", "rgba(26, 34, 38, 0.68)"
 _APP_CSS = """
     <style>
     :root {
-        --accent-1: #6366f1;
-        --accent-2: #06b6d4;
-        --card-bg: __CARD_BG__;
-        --card-border: __CARD_BORDER__;
-        --fg-primary: __FG_PRIMARY__;
-        --fg-muted: __FG_MUTED__;
+        --accent-1: #7c3aed;
+        --accent-2: #2563eb;
+        --card-bg: var(--ef-surface-2);
+        --card-border: var(--ef-border-strong);
+        --fg-primary: var(--ef-text);
+        --fg-muted: var(--ef-muted);
     }
     @keyframes gradient-shift {
         0%   { background-position: 0% 50%; }
@@ -233,6 +222,30 @@ _APP_CSS = """
         0%, 100% { opacity: 1; }
         50%      { opacity: 0; }
     }
+
+    .ef-capability-strip {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.5rem;
+        margin: 0.15rem 0 1.15rem;
+    }
+    .ef-capability {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.42rem;
+        padding: 0.42rem 0.68rem;
+        border: 1px solid var(--card-border);
+        border-radius: 999px;
+        background: color-mix(in srgb, var(--card-bg) 94%, transparent);
+        color: var(--fg-primary);
+        font-size: 0.76rem;
+        font-weight: 650;
+        line-height: 1;
+    }
+    .ef-cap-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent-1); flex: 0 0 auto; }
+    .ef-cap-dot.web { background: var(--accent-2); }
+    .ef-cap-dot.verify { background: #10b981; }
+    .ef-cap-dot.memory { background: #8b5cf6; }
 
     .app-header {
         display: flex;
@@ -313,15 +326,30 @@ _APP_CSS = """
         flex-direction: column;
         align-items: center;
         text-align: center;
-        gap: 0.6rem;
-        padding: 2.2rem 1rem;
-        margin: 1rem 0 1.4rem 0;
-        border-radius: 18px;
-        background: var(--card-bg);
+        gap: 0.55rem;
+        padding: 1.35rem 1rem;
+        margin: 0.75rem 0 1rem 0;
+        border-radius: 20px;
+        background: linear-gradient(180deg, color-mix(in srgb, var(--card-bg) 97%, var(--accent-1) 3%), var(--card-bg));
         border: 1px dashed var(--card-border);
+        box-shadow: 0 14px 36px rgba(15,23,42,.06);
         animation: fade-in-up 0.5s ease both;
     }
     .empty-state svg { animation: pulse-soft 4s ease-in-out infinite; color: var(--accent-1); }
+    .empty-kicker {
+        font-size: .68rem;
+        font-weight: 800;
+        letter-spacing: .14em;
+        color: var(--accent-1);
+    }
+    .empty-icon-wrap {
+        display: grid; place-items: center;
+        width: 56px; height: 56px; border-radius: 16px;
+        background: color-mix(in srgb, var(--accent-1) 9%, var(--card-bg));
+        border: 1px solid color-mix(in srgb, var(--accent-1) 22%, var(--card-border));
+    }
+    .empty-actions-hint { color: var(--fg-muted); font-size: .76rem; margin-top: .1rem; }
+    .empty-actions-hint span { margin: 0 .35rem; color: var(--accent-1); }
     .empty-state .empty-title {
         font-weight: 700;
         font-size: 1.05rem;
@@ -436,15 +464,51 @@ _APP_CSS = """
         transform: translateY(-1px);
         box-shadow: 0 4px 12px rgba(99, 102, 241, 0.25);
     }
+
+
+    .ef-route-pill { display:inline-flex;align-items:center;gap:.38rem;padding:.30rem .58rem;border-radius:999px;border:1px solid var(--ef-border);background:color-mix(in srgb,var(--ef-accent) 7%,var(--ef-surface));color:var(--ef-text-2);font-size:.70rem;font-weight:700;margin:.05rem 0 .65rem; }
+    .ef-route-dot { width:6px;height:6px;border-radius:50%;background:var(--ef-accent);box-shadow:0 0 0 4px color-mix(in srgb,var(--ef-accent) 10%,transparent); }
+    .ef-evidence-summary { display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:.4rem;margin:.55rem 0 .75rem; }
+    .ef-evidence-stat { padding:.52rem .55rem;border:1px solid var(--ef-border);border-radius:10px;background:var(--ef-surface-2); }
+    .ef-evidence-stat strong { display:block;color:var(--ef-text)!important;font-size:.85rem; }
+    .ef-evidence-stat span { color:var(--ef-muted);font-size:.62rem; }
+    .ef-trace { border-left:2px solid color-mix(in srgb,var(--ef-accent) 30%,var(--ef-border));padding-left:.7rem; }
+    .ef-trace-step { padding:.28rem 0;color:var(--ef-text-2);font-size:.72rem; }
+    .ef-trace-step::before { content:'✓';color:#10b981;font-weight:800;margin-right:.45rem; }
+    .ef-evidence-card { transition:transform .16s ease,border-color .16s ease,box-shadow .16s ease; }
+    .ef-evidence-card:hover { transform:translateY(-1px);border-color:color-mix(in srgb,var(--ef-accent) 36%,var(--ef-border)); }
+    .ef-evidence-source { color:var(--ef-muted);font-size:.65rem;margin-top:.35rem; }
+
+    .ef-section-kicker {
+        margin: .7rem 0 .35rem; font-size:.67rem; font-weight:850; letter-spacing:.16em;
+        color:var(--ef-accent); text-transform:uppercase;
+    }
+    .ef-mode-caption { color:var(--ef-muted); font-size:.73rem; margin-bottom:.35rem; }
+    .ef-evidence-panel {
+        position:sticky; top:1rem; align-self:flex-start;
+        max-height:calc(100vh - 7rem); overflow:auto; padding:1rem;
+        border:1px solid var(--ef-border); border-radius:18px;
+        background:linear-gradient(180deg,color-mix(in srgb,var(--ef-accent) 3%,var(--ef-surface)),var(--ef-surface));
+        box-shadow:var(--ef-shadow);
+    }
+    .ef-evidence-title { font-size:.9rem; font-weight:850; color:var(--ef-text); margin-bottom:.12rem; }
+    .ef-evidence-sub { font-size:.72rem; color:var(--ef-muted); margin-bottom:.8rem; }
+    .ef-evidence-card { border:1px solid var(--ef-border); border-radius:13px; padding:.72rem; margin:.55rem 0; background:var(--ef-surface-2); }
+    .ef-evidence-card.selected { border-color:color-mix(in srgb,var(--ef-accent) 55%,var(--ef-border)); box-shadow:0 0 0 3px color-mix(in srgb,var(--ef-accent) 9%,transparent); }
+    .ef-evidence-card strong { color:var(--ef-text)!important; font-size:.75rem; }
+    .ef-evidence-card p { color:var(--ef-text-2)!important; font-size:.74rem; line-height:1.5; margin:.4rem 0 0; }
+    .ef-evidence-badge { display:inline-flex; margin-top:.42rem; padding:.18rem .45rem; border-radius:999px; border:1px solid color-mix(in srgb,var(--ef-accent) 28%,var(--ef-border)); color:var(--ef-accent); font-size:.64rem; font-weight:750; }
+    .ef-evidence-empty { padding:1rem .3rem; color:var(--ef-muted); font-size:.74rem; line-height:1.55; }
+    .ef-evidence-panel .stButton>button { min-height:34px!important; padding:.2rem .55rem!important; font-size:.72rem!important; }
+    .ef-open-marker { display:none!important; }
+    body:has(.ef-evidence-open) [data-testid="stChatInput"]>div { width:min(1060px,calc(100% - 430px))!important; margin-left:0!important; margin-right:390px!important; }
+    @media (max-width: 1100px) {
+        body:has(.ef-evidence-open) [data-testid="stChatInput"]>div { width:calc(100% - 2rem)!important; margin:0 auto!important; }
+    }
+
     </style>
     """
-st.markdown(
-    _APP_CSS.replace("__CARD_BG__", _card_bg)
-    .replace("__CARD_BORDER__", _card_border)
-    .replace("__FG_PRIMARY__", _fg_primary)
-    .replace("__FG_MUTED__", _fg_muted),
-    unsafe_allow_html=True,
-)
+st.markdown(_APP_CSS, unsafe_allow_html=True)
 
 st.markdown(
     f'<div class="app-header">{_icon("robot", size=34)}<h1>Document Research Assistant</h1></div>',
@@ -453,6 +517,22 @@ st.markdown(
 st.markdown(
     '<div class="app-subtitle">Ask a question, or attach a document to add it to the knowledge base — '
     "the agent decides on its own whether it needs the knowledge base, the web, both, or neither.</div>",
+    unsafe_allow_html=True,
+)
+st.markdown(
+    """
+    <div class="ef-capability-strip" aria-label="EvidenceFlow capabilities">
+      <span class="ef-capability"><span class="ef-cap-dot"></span>Hybrid retrieval</span>
+      <span class="ef-capability"><span class="ef-cap-dot web"></span>Web-aware routing</span>
+      <span class="ef-capability"><span class="ef-cap-dot verify"></span>Evidence verification</span>
+      <span class="ef-capability"><span class="ef-cap-dot memory"></span>Persistent threads</span>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+st.markdown(
+    "<div class=\"ef-section-kicker\">RESEARCH CONTROLS</div>",
     unsafe_allow_html=True,
 )
 
@@ -592,6 +672,10 @@ def _messages_from_jsonable(messages: list[dict]) -> list[dict]:
 # LATER function gets called. Left both defined together up here rather
 # than only relocating one, so the pair stays next to each other.
 st.session_state.setdefault("messages", [])  # [{"role": "user"|"assistant", "content": str}]
+st.session_state.setdefault("research_mode", "Auto")
+st.session_state.setdefault("evidence_open", False)
+st.session_state.setdefault("selected_evidence_id", None)
+st.session_state.setdefault("evidence_checks", {})
 st.session_state.setdefault("uploaded_docs", _load_uploaded_docs())  # GLOBAL (sidebar uploader) — see module docstring
 st.session_state.setdefault("sidebar_uploader_key", 0)  # bumped after each ingest to reset the widget
 st.session_state.setdefault("built_agent", None)
@@ -1518,292 +1602,503 @@ def _get_or_build_agent() -> dict:
     return st.session_state.built_agent
 
 
-if not st.session_state.uploaded_docs and not st.session_state.chat_uploaded_docs:
-    # Prominent, main-area signal — not just the sidebar's small "None
-    # uploaded/attached yet." captions — since the knowledge base (global +
-    # this chat's own, see `_document_ids_in_scope`) is genuinely empty: a
-    # KB question here will correctly come back empty, and the user should
-    # know why before asking, not have to infer it from a vague answer.
-    st.markdown(
-        f"""
-        <div class="empty-state">
-            {_icon("mood-empty", size=48)}
-            <div class="empty-title">No documents in the knowledge base yet</div>
-            <div class="empty-sub">
-                Upload a file from the sidebar, or attach one directly to your message below,
-                to start asking questions grounded in your own documents.
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
+# Interactive evidence workspace. It is a presentation/action layer over the
+# existing citation metadata: inspect, locally re-verify, or challenge an item
+# with a follow-up research turn. The underlying LangGraph/RAG behavior stays unchanged.
+def _latest_meta() -> dict | None:
+    return next(
+        (m.get("meta") for m in reversed(st.session_state.messages)
+         if m.get("role") == "assistant" and m.get("meta")),
+        None,
     )
 
-_ASSISTANT_AVATAR = "🤖"
-_last_idx = len(st.session_state.messages) - 1
 
-for idx, msg in enumerate(st.session_state.messages):
-    avatar = _ASSISTANT_AVATAR if msg["role"] == "assistant" else None
-    with st.chat_message(msg["role"], avatar=avatar):
-        st.write(msg["content"])
-        if msg.get("meta"):
-            _render_message_meta(msg["meta"], idx)
+def _evidence_registry_for_meta(meta: dict) -> dict:
+    chunks = meta.get("chunks") or []
+    eid_to_doc = {}
+    eid_to_content = {}
+    eid_to_meta = {}
+    for c in chunks:
+        eid = getattr(c, "evidence_id", None)
+        if not eid:
+            continue
+        eid_to_doc[eid] = getattr(c, "document_id", "") or ""
+        eid_to_content[eid] = getattr(c, "content", "") or ""
+        eid_to_meta[eid] = {"retrieval_score": getattr(c, "score", None)}
+    return {"eid_to_doc": eid_to_doc, "eid_to_content": eid_to_content, "eid_to_meta": eid_to_meta}
 
-        # ALLOW-list, deliberately — not "show buttons unless this looks
-        # like a notice" (a deny-list), which is what this used to be and
-        # kept needing another patch every time one more notice-message
-        # site turned up untagged (upload confirmations, then delete
-        # confirmations, ...): a real question sits behind a genuine
-        # answer or a turn-level error, so those two cases are enumerated
-        # explicitly, and everything else — including any FUTURE system
-        # notice this file adds and forgets to tag — safely defaults to no
-        # action row, rather than defaulting to showing one.
-        # `"meta"` marks a real successful answer; `"kind": "turn_error"`
-        # marks a real turn that failed (see the `except` block above) —
-        # both appended only from inside the actual turn-handling flow,
-        # never from an upload/delete helper. The content-prefix check
-        # covers turn errors saved to `chat_history/<thread_id>.json`
-        # before `"kind": "turn_error"` existed (old wording, no tag).
-        _is_real_turn = bool(msg.get("meta")) or msg.get("kind") == "turn_error" or msg["content"].startswith(
-            "⚠️ Sorry,"
-        )
-        if msg["role"] == "assistant" and _is_real_turn:
-            # Regenerate: only offered on the LAST message, and deliberately
-            # NOT a true history rewrite — the checkpointer (what the MODEL
-            # remembers, see module docstring "Real conversation memory")
-            # still has the original turn in it; this just asks the same
-            # question again as a fresh turn and swaps the UI-visible
-            # answer. Offering it on an EARLIER message would leave the
-            # checkpointer's memory permanently out of sync with what the
-            # UI shows from that point on, so it's scoped out rather than
-            # built half-right.
-            is_last_assistant = idx == _last_idx
 
-            # Icon-only, hover-tooltip design — same "icon + native title
-            # attribute" pattern the browser already gives Streamlit's own
-            # `help=` tooltip on Regenerate, just written by hand for the
-            # Copy button since it isn't a Streamlit widget. `title="..."`
-            # is a plain HTML attribute, not JS — no extra library or
-            # component needed for the hover behavior.
-            #
-            # Real one-click clipboard copy via a plain HTML button with an
-            # `onclick` handler — not a Streamlit widget at all, so there's
-            # no rerun/callback involved. Inline event-handler ATTRIBUTES
-            # (onclick="...") execute normally wherever the browser parses
-            # them, unlike a `<script>` TAG injected via innerHTML (which
-            # browsers block) — confirmed this is how Streamlit inserts
-            # `unsafe_allow_html` content (a direct DOM insertion, not a
-            # sandboxed component iframe), so this isn't the fragile case
-            # an iframe-based `st.html` clipboard call would be.
-            # Double-escaped, deliberately: `json.dumps` first produces a
-            # valid JS string literal (handles quotes/newlines/backslashes
-            # inside the message text), then `html.escape` makes THAT safe
-            # to sit inside an HTML attribute (handles a literal `"` in the
-            # JS-string output from breaking out of the attribute early) —
-            # skipping either step is a real injection risk, not a
-            # theoretical one, given this text can contain a model's or a
-            # document's own content. Click feedback swaps the ICON itself
-            # (📋 -> ✅ -> back), not button text, since there's no text
-            # label anymore to swap.
-            _copy_payload = html_lib.escape(json.dumps(msg["content"]), quote=True)
-            _copy_html = (
-                '<div class="msg-actions">'
-                f'<button class="copy-native-btn" title="Copy to clipboard" '
-                f"onclick=\"navigator.clipboard.writeText({_copy_payload}).then(()=>{{"
-                f"this.innerText='✅';setTimeout(()=>this.innerText='📋',1400)}})"
-                f'.catch(()=>{{this.innerText=\'⚠️\'}})">📋</button></div>'
-            )
-            if is_last_assistant:
-                # Explicit `st.columns` (not just two stacked elements) —
-                # Streamlit lays out top-level calls vertically by default,
-                # so without this the HTML Copy button and the Regenerate
-                # widget would each land on their own row regardless of how
-                # narrow either one is. Both are small, icon-only, content-
-                # width buttons now (no long label text to size a column
-                # around anymore), so a narrow shared column pair followed
-                # by a wide spacer keeps them snug together on the left
-                # rather than stretched across the row.
-                col_copy, col_regen, _col_spacer = st.columns([1, 1, 10])
-                with col_copy:
-                    st.markdown(_copy_html, unsafe_allow_html=True)
-                with col_regen:
-                    if st.button("", key=f"regen_{idx}", icon="🔁", help="Ask this again"):
-                        prev_user_text = next(
-                            (m["content"] for m in reversed(st.session_state.messages[:idx]) if m["role"] == "user"),
-                            None,
-                        )
-                        if prev_user_text:
-                            st.session_state.messages.pop(idx)
-                            st.session_state["_pending_regenerate"] = prev_user_text
-                            st.rerun()
-            else:
-                st.markdown(_copy_html, unsafe_allow_html=True)
+def _verify_evidence_now(meta: dict, eid: str) -> dict:
+    registry = _evidence_registry_for_meta(meta)
+    content = registry.get("eid_to_content", {}).get(eid, "")
+    document_id = registry.get("eid_to_doc", {}).get(eid, "")
+    ref = {"evidence_id": eid, "document_id": document_id, "content": content,
+           "retrieval_score": (registry.get("eid_to_meta", {}).get(eid) or {}).get("retrieval_score")}
+    result = verify_reference(ref, registry)
+    return {"status": result.status, "reason": result.reason}
 
-st.caption("⏎ Enter to send · attach a file to add it to this chat's knowledge base")
-user_input = st.chat_input(
-    "Message the assistant, or attach a document to add it to the knowledge base...",
-    accept_file="multiple",
-    file_type=["txt", "md", "csv", "pdf", "docx", "doc"],
-)
 
-# A "Regenerate" click on the last message (see the history loop above)
-# stashes the preceding user text here and reruns — picked up as if it were
-# fresh chat_input, EXCEPT the user bubble/message-append below is skipped
-# for it (that turn's user message is already in session_state; regenerate
-# only replaces the assistant's reply, never duplicates the question).
-_pending_regenerate = st.session_state.pop("_pending_regenerate", None)
-is_regenerate = _pending_regenerate is not None
-if is_regenerate:
-    text, files = _pending_regenerate, []
-elif user_input:
-    text = user_input if isinstance(user_input, str) else user_input.text
-    files = [] if isinstance(user_input, str) else user_input.files
-else:
-    text, files = None, []
-
-if text or files:
-    # Attach-in-chat is PER-CHAT scope (see module docstring) — uses
-    # chat_ingested_hashes/_record_chat_upload, not the global ones the
-    # sidebar uploader uses.
-    for f in files:
-        content = f.read()
-        content_hash = hashlib.sha256(content).hexdigest()
-        if content_hash in st.session_state.chat_ingested_hashes:
-            continue  # already attached in this chat — skip silently
-        with st.spinner(f"Adding {f.name} to this chat's knowledge base..."):
-            try:
-                result = _run_async(ingest_document(content, source_name=f.name))
-            except Exception as exc:  # noqa: BLE001 - POC diagnostic surface
-                st.session_state.messages.append(
-                    {"role": "assistant", "content": f"Couldn't ingest {f.name}: {exc!r}", "kind": "notice"}
-                )
-                continue
-        st.session_state.chat_ingested_hashes.add(content_hash)
-        _record_chat_upload(f.name, result["document_id"], result["chunk_count"], content_hash)
-        st.toast(f"Added {f.name} ✓", icon="✅")
-
-    if text and text.strip():
-        if not is_regenerate:
-            st.session_state.messages.append({"role": "user", "content": text})
-            with st.chat_message("user"):
-                st.write(text)
-
-        _TYPING_HTML = (
-            '<div class="typing-indicator"><span></span><span></span><span></span></div>'
-        )
-        # Rough, deliberately approximate step count for the progress bar
-        # below — turns don't all hit the same nodes (a pure web-search
-        # turn never touches `analyze_chunk`, a single-document answer
-        # skips `summarize_document`), so there's no single "total steps"
-        # to compute honestly ahead of time. Treated as a visual "still
-        # moving forward" signal, not a literal percentage — capped short
-        # of 100% until the turn actually finishes.
-        _PROGRESS_STEP_GUESS = 4
-
-        async def _consume(built):
-            import html as html_lib
-
-            status_box = st.status("Working...", expanded=False)
-            progress_box = st.empty()
-            text_box = st.empty()
-            progress_box.progress(0.05, text=None)
-            # Animated dots instead of a bare blank area — communicates
-            # "alive, still working" for the gap between the status updates
-            # above and the first real token arriving below.
-            text_box.markdown(_TYPING_HTML, unsafe_allow_html=True)
-            accumulated = ""
-            steps_seen = 0
-            final_outcome = None
-            async for event in astream_langgraph_turn(built, text, thread_id=st.session_state.thread_id):
-                if event["type"] == "status":
-                    status_box.update(label=event["text"])
-                    steps_seen += 1
-                    progress_box.progress(min(0.9, steps_seen / _PROGRESS_STEP_GUESS))
-                elif event["type"] == "token":
-                    accumulated += event["text"]
-                    # Escaped (HTML-special chars only, quotes left alone so
-                    # rare markdown title-attribute quotes still render) +
-                    # a blinking caret, for the LIVE in-progress view only —
-                    # the final render below reverts to the exact original
-                    # plain `st.markdown(accumulated)` call, unescaped, so
-                    # the persisted message's formatting is byte-for-byte
-                    # what it always was.
-                    text_box.markdown(
-                        html_lib.escape(accumulated, quote=False) + ' <span class="stream-caret">▌</span>',
-                        unsafe_allow_html=True,
-                    )
-                elif event["type"] == "final":
-                    final_outcome = event
-            progress_box.progress(1.0)
-            progress_box.empty()
-            text_box.markdown(accumulated)  # final, unescaped render — see comment above
-            status_box.update(label="Done", state="complete")
-            return final_outcome
-
-        with st.chat_message("assistant", avatar=_ASSISTANT_AVATAR):
-            outcome = None
-            error_text = None
-            try:
-                # Agent/checkpointer construction moved inside this same
-                # try/except (and this same visible chat bubble) — it used
-                # to run before this block, unguarded and with no status
-                # indicator, so a real failure or just a slow first-ever
-                # `chat_history/checkpoints.db` setup looked like "nothing happens" with
-                # zero feedback. First call after a fresh install/restart
-                # does real disk I/O now (AsyncSqliteSaver), unlike the old
-                # instant, zero-I/O `InMemorySaver`.
-                with st.spinner("Setting up..."):
-                    built = _get_or_build_agent()
-                outcome = _run_async(_consume(built))
-            except asyncio.TimeoutError:
-                error_text = (
-                    f"⚠️ Sorry, this took longer than {_TURN_TIMEOUT_SECONDS}s and was stopped "
-                    "(backend or retrieval likely stalled) — please try again."
-                )
-            except Exception as exc:  # noqa: BLE001 - POC diagnostic surface
-                LOGGER.exception("LangGraph turn failed", exc_info=exc)
-                tb = traceback.format_exc()
-                error_text = f"⚠️ Sorry, that run failed: {exc!r}"
-                # Keep the user-facing message clean, but expose the actual
-                # exception type/traceback in an expandable diagnostic area
-                # so hosted deployments don't collapse everything into the
-                # unhelpful `UnexpectedResponse()` string.
-                with st.expander("Technical error details", expanded=True):
-                    st.code(tb, language="text")
-
-            # Appended to session_state, not left as a bare `st.error(...)`
-            # call — this block always ends in `st.rerun()` a few lines
-            # down, which redraws the whole page from scratch; anything
-            # rendered only in THIS run's DOM (a transient `st.error`)
-            # vanishes the instant that rerun fires. Seen live: "an error
-            # but it disappeared instantly." A message in session_state
-            # survives the rerun and renders every time, like any other
-            # chat bubble.
-            if error_text is not None:
-                st.error(error_text)  # still shown immediately in this run, for zero-latency feedback
-                # "kind": "turn_error" — a REAL turn failure (timeout,
-                # exception), not a system notice: there IS a real question
-                # behind it, so unlike upload/delete notices this correctly
-                # keeps Copy/Regenerate (retry) available — see the history
-                # loop's own comment on why this is now an allow-list, not
-                # a deny-list.
-                st.session_state.messages.append(
-                    {"role": "assistant", "content": error_text, "kind": "turn_error"}
-                )
-
-        if outcome is not None:
-            # meta is built from the RAW (tagged) final_answer first — it
-            # needs the `[EVID: E<n>]` markers intact to know which chunks
-            # were actually cited (see _meta_from_outcome) — only the stored
-            # chat `content` gets the tags stripped, so the bubble itself
-            # never shows raw "[EVID: E1]" text to the user.
-            meta = _meta_from_outcome(outcome)
-            st.session_state.messages.append(
-                {
-                    "role": "assistant",
-                    "content": _strip_evidence_tags(outcome["final_answer"]),
-                    "meta": meta,
-                }
-            )
-
-    _persist_current_chat()  # covers both the upload-only and text-message paths above
+def _challenge_evidence(eid: str, content: str) -> None:
+    prompt = (
+        f"Challenge evidence {eid}. Re-evaluate the passage below against the available evidence "
+        "and the original research context. Look for unsupported claims, missing context, numerical/date "
+        "mismatches, or contradictory evidence. State whether the evidence should remain trusted and cite "
+        "the strongest supporting or contradicting evidence.\n\n"
+        f"Evidence {eid}: {content[:1600]}"
+    )
+    st.session_state["_pending_research_prompt"] = prompt
+    st.session_state["research_mode"] = "Contradictions"
+    st.session_state["evidence_open"] = True
     st.rerun()
+
+
+
+def _route_summary(meta: dict | None) -> str:
+    if not meta:
+        return "Awaiting a research turn"
+    parts=[]
+    if meta.get("used_knowledge_base"): parts.append("Knowledge base")
+    if meta.get("used_web"): parts.append("Web")
+    if meta.get("used_primary_source"): parts.append("MCP")
+    return " + ".join(parts) if parts else "No external source route"
+
+
+def _queue_research_starter(prompt: str, mode: str = "Auto") -> None:
+    st.session_state["_pending_research_prompt"] = prompt
+    st.session_state["research_mode"] = mode
+    st.session_state["evidence_open"] = False
+    st.rerun()
+
+def _render_evidence_panel() -> None:
+    meta = _latest_meta()
+    if not meta or not st.session_state.get("evidence_open", False):
+        return
+
+    st.markdown('<div class="ef-evidence-open"></div>', unsafe_allow_html=True)
+    header_col, close_col = st.columns([5, 1])
+    with header_col:
+        st.markdown('<div class="ef-evidence-title">Verified evidence</div>', unsafe_allow_html=True)
+        grounding = meta.get("grounding_status") or ("Abstained" if meta.get("abstained") else "Grounded")
+        st.markdown(f'<div class="ef-evidence-sub">Claim → evidence → source · <strong>{html_lib.escape(str(grounding))}</strong></div>', unsafe_allow_html=True)
+    with close_col:
+        if st.button("", icon="✕", help="Close evidence workspace", key="close-evidence-panel"):
+            st.session_state.evidence_open=False
+            st.rerun()
+
+    cited=set(meta.get("cited_evidence_ids") or [])
+    chunks=[c for c in (meta.get("chunks") or []) if not cited or getattr(c,"evidence_id",None) in cited]
+    web_sources=meta.get("web_sources") or []
+    quality=meta.get("quality") or {}
+    coverage=quality.get("citation_coverage")
+    verified_count=meta.get("verified_count")
+    proposed_count=meta.get("proposed_count")
+    if coverage is not None:
+        try: cov=f"{float(coverage):.0%}"
+        except (TypeError,ValueError): cov="—"
+    else: cov=str(verified_count if verified_count is not None else 0)
+    stats=[(str(len(chunks)),"cited passages"),(str(len(web_sources)),"web sources"),(cov,"coverage")]
+    st.markdown('<div class="ef-evidence-summary">'+''.join(f'<div class="ef-evidence-stat"><strong>{html_lib.escape(v)}</strong><span>{html_lib.escape(lbl)}</span></div>' for v,lbl in stats)+'</div>',unsafe_allow_html=True)
+
+    tab_evidence,tab_sources,tab_trace=st.tabs(["Evidence","Sources","Trace"])
+    with tab_evidence:
+        if not chunks:
+            st.info("No knowledge-base evidence was cited in the latest answer.")
+        for idx,c in enumerate(chunks[:8]):
+            eid=getattr(c,"evidence_id",None) or f"E{idx+1}"
+            content=str(getattr(c,"content","") or "").strip()
+            selected=st.session_state.get("selected_evidence_id")==eid
+            check=st.session_state.get("evidence_checks",{}).get(eid)
+            badge="Verified" if (check or {}).get("status")=="verified" else ("Needs review" if check else "Backend verified")
+            doc_id=str(getattr(c,"document_id","") or "")
+            st.markdown(f'<div class="ef-evidence-card {"selected" if selected else ""}"><strong>{html_lib.escape(eid)}</strong><p>{html_lib.escape(content[:420])}{"…" if len(content)>420 else ""}</p><span class="ef-evidence-badge">{html_lib.escape(badge)}</span><div class="ef-evidence-source">{html_lib.escape(doc_id or "Source passage")}</div></div>',unsafe_allow_html=True)
+            b1,b2,b3=st.columns(3,gap="small")
+            with b1:
+                if st.button("Inspect",key=f"inspect-evidence-{eid}",use_container_width=True):
+                    st.session_state.selected_evidence_id=eid; st.rerun()
+            with b2:
+                if st.button("Verify",key=f"verify-evidence-{eid}",use_container_width=True):
+                    result=_verify_evidence_now(meta,eid); st.session_state.evidence_checks[eid]=result; st.session_state.selected_evidence_id=eid
+                    st.toast(f"{eid}: {result['status']} · {result['reason']}",icon="✅" if result["status"]=="verified" else "⚠️"); st.rerun()
+            with b3:
+                if st.button("Challenge",key=f"challenge-evidence-{eid}",use_container_width=True): _challenge_evidence(eid,content)
+            if selected:
+                st.caption(f"Evidence {eid} · retrieval score: {getattr(c,'score',0.0):.3f}")
+                st.markdown(content)
+        if quality.get("evidence_conflicts"):
+            st.warning("Potential evidence conflict detected. Use Challenge on the affected passage to investigate.")
+        if meta.get("abstained"):
+            st.error("The answer was withheld because sufficient verified evidence was not available.")
+
+    with tab_sources:
+        if chunks:
+            st.markdown("**Knowledge-base sources**")
+            for idx,c in enumerate(chunks[:8]):
+                doc_id=str(getattr(c,"document_id","") or f"Document {idx+1}")
+                eid=str(getattr(c,"evidence_id",None) or f"E{idx+1}")
+                st.markdown(f'<div class="ef-evidence-card"><strong>{html_lib.escape(doc_id)}</strong><div class="ef-evidence-source">Referenced by {html_lib.escape(eid)}</div></div>',unsafe_allow_html=True)
+        if web_sources:
+            st.markdown("**Web sources**")
+            for idx,src in enumerate(web_sources[:6]):
+                title=str(src.get("title") or src.get("url") or f"Web source {idx+1}"); url=str(src.get("url") or "")
+                st.markdown(f'<div class="ef-evidence-card"><strong>WEB {idx+1}</strong><p>{html_lib.escape(title)}</p></div>',unsafe_allow_html=True)
+                if url: st.link_button("Open source ↗",url,use_container_width=True)
+        if not chunks and not web_sources: st.info("No source records are available for this turn.")
+
+    with tab_trace:
+        st.markdown("<div class='ef-trace'>",unsafe_allow_html=True)
+        route=_route_summary(meta)
+        steps=[f"Route selected: {route}",f"Retrieved {len(meta.get('chunks') or [])} candidate passages",f"Cited passages: {len(chunks)}",f"Verification: {meta.get('grounding_status') or ('Abstained' if meta.get('abstained') else 'Grounded')}",f"Web research: {'used' if meta.get('used_web') else 'not used'}"]
+        for step in steps: st.markdown(f'<div class="ef-trace-step">{html_lib.escape(step)}</div>',unsafe_allow_html=True)
+        st.markdown("</div>",unsafe_allow_html=True)
+        if verified_count is not None or proposed_count is not None: st.caption(f"{verified_count or 0} verified / {proposed_count or 0} proposed evidence references")
+
+
+def _mode_instruction(mode: str) -> str:
+    return {
+        "Auto": "Let the agent decide the best source strategy (knowledge base, web research, both, or neither).",
+        "Knowledge base": "Prioritize the uploaded knowledge base. Use the available documents as the primary source of truth and do not rely on web research unless strictly necessary.",
+        "Web research": "Prioritize web research for current or externally verifiable information. Cite the web sources used and distinguish them from uploaded-document evidence.",
+        "Compare": "Compare the strongest available sources side by side and explain where they agree or differ. Cite the evidence supporting each comparison.",
+        "Contradictions": "Actively look for conflicting claims, numbers, dates, or source statements and explain which evidence is stronger and why.",
+        "Summarize": "Summarize the available sources with emphasis on grounded findings, separating supported facts from uncertainty.",
+    }.get(mode, "Let the agent decide the best source strategy.")
+
+
+# Main workspace + conditional evidence workspace. The app's left sidebar remains
+# the navigation/document control plane; this area is the product workspace.
+_latest = _latest_meta()
+_show_evidence = bool(_latest and st.session_state.get("evidence_open", False))
+if _show_evidence:
+    _main_col, _evidence_col = st.columns([7.5, 2.8], gap="large")
+else:
+    _main_col = st.container()
+    _evidence_col = None
+with _main_col:
+    _mode_options = ["Auto", "Knowledge base", "Web research", "Compare", "Contradictions", "Summarize"]
+    _mode_cols = st.columns(len(_mode_options))
+    for _mcol, _mode_name in zip(_mode_cols, _mode_options):
+        with _mcol:
+            if st.button(_mode_name, key=f"mode-{_mode_name}", use_container_width=True, type="primary" if st.session_state.research_mode == _mode_name else "secondary"):
+                st.session_state.research_mode = _mode_name
+                st.rerun()
+    st.caption(f"Research mode: **{st.session_state.research_mode}** · {_mode_instruction(st.session_state.research_mode)}")
+    if _latest:
+        st.markdown(f'<span class="ef-route-pill"><span class="ef-route-dot"></span>Route used · {html_lib.escape(_route_summary(_latest))}</span>', unsafe_allow_html=True)
+        if not st.session_state.get("evidence_open", False):
+            if st.button("Open evidence workspace", icon="🔎", key="open-evidence-main"):
+                st.session_state.evidence_open=True; st.rerun()
+
+    if not st.session_state.uploaded_docs and not st.session_state.chat_uploaded_docs:
+        # Prominent, main-area signal — not just the sidebar's small "None
+        # uploaded/attached yet." captions — since the knowledge base (global +
+        # this chat's own, see `_document_ids_in_scope`) is genuinely empty: a
+        # KB question here will correctly come back empty, and the user should
+        # know why before asking, not have to infer it from a vague answer.
+        st.markdown(
+            f"""
+            <div class="empty-state">
+                <div class="empty-kicker">RESEARCH WORKSPACE</div>
+                <div class="empty-icon-wrap">{_icon("mood-empty", size=40)}</div>
+                <div class="empty-title">Start a grounded research turn</div>
+                <div class="empty-sub">
+                    Add a document to build your knowledge scope, or attach one directly to the next question.
+                </div>
+                <div class="empty-actions-hint">Upload in the sidebar <span>•</span> Attach in chat <span>•</span> Ask anything</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        _starter_cols = st.columns(3, gap="small")
+        _starter_specs = [
+            ("Compare documents", "Compare two uploaded documents and identify the strongest supported conclusion.", "Compare"),
+            ("Find contradictions", "Find conflicting claims, numbers, or dates across the available sources.", "Contradictions"),
+            ("Research a topic", "Research a topic using the best available sources and cite only supported evidence.", "Web research"),
+        ]
+        for _col, (_label, _prompt, _mode) in zip(_starter_cols, _starter_specs):
+            with _col:
+                if st.button(_label, use_container_width=True, key=f"starter-{_label}"):
+                    _queue_research_starter(_prompt, _mode)
+
+    _ASSISTANT_AVATAR = "🤖"
+    _last_idx = len(st.session_state.messages) - 1
+
+    for idx, msg in enumerate(st.session_state.messages):
+        avatar = _ASSISTANT_AVATAR if msg["role"] == "assistant" else None
+        with st.chat_message(msg["role"], avatar=avatar):
+            st.write(msg["content"])
+            if msg.get("meta"):
+                _render_message_meta(msg["meta"], idx)
+
+            # ALLOW-list, deliberately — not "show buttons unless this looks
+            # like a notice" (a deny-list), which is what this used to be and
+            # kept needing another patch every time one more notice-message
+            # site turned up untagged (upload confirmations, then delete
+            # confirmations, ...): a real question sits behind a genuine
+            # answer or a turn-level error, so those two cases are enumerated
+            # explicitly, and everything else — including any FUTURE system
+            # notice this file adds and forgets to tag — safely defaults to no
+            # action row, rather than defaulting to showing one.
+            # `"meta"` marks a real successful answer; `"kind": "turn_error"`
+            # marks a real turn that failed (see the `except` block above) —
+            # both appended only from inside the actual turn-handling flow,
+            # never from an upload/delete helper. The content-prefix check
+            # covers turn errors saved to `chat_history/<thread_id>.json`
+            # before `"kind": "turn_error"` existed (old wording, no tag).
+            _is_real_turn = bool(msg.get("meta")) or msg.get("kind") == "turn_error" or msg["content"].startswith(
+                "⚠️ Sorry,"
+            )
+            if msg["role"] == "assistant" and _is_real_turn:
+                # Regenerate: only offered on the LAST message, and deliberately
+                # NOT a true history rewrite — the checkpointer (what the MODEL
+                # remembers, see module docstring "Real conversation memory")
+                # still has the original turn in it; this just asks the same
+                # question again as a fresh turn and swaps the UI-visible
+                # answer. Offering it on an EARLIER message would leave the
+                # checkpointer's memory permanently out of sync with what the
+                # UI shows from that point on, so it's scoped out rather than
+                # built half-right.
+                is_last_assistant = idx == _last_idx
+
+                # Icon-only, hover-tooltip design — same "icon + native title
+                # attribute" pattern the browser already gives Streamlit's own
+                # `help=` tooltip on Regenerate, just written by hand for the
+                # Copy button since it isn't a Streamlit widget. `title="..."`
+                # is a plain HTML attribute, not JS — no extra library or
+                # component needed for the hover behavior.
+                #
+                # Real one-click clipboard copy via a plain HTML button with an
+                # `onclick` handler — not a Streamlit widget at all, so there's
+                # no rerun/callback involved. Inline event-handler ATTRIBUTES
+                # (onclick="...") execute normally wherever the browser parses
+                # them, unlike a `<script>` TAG injected via innerHTML (which
+                # browsers block) — confirmed this is how Streamlit inserts
+                # `unsafe_allow_html` content (a direct DOM insertion, not a
+                # sandboxed component iframe), so this isn't the fragile case
+                # an iframe-based `st.html` clipboard call would be.
+                # Double-escaped, deliberately: `json.dumps` first produces a
+                # valid JS string literal (handles quotes/newlines/backslashes
+                # inside the message text), then `html.escape` makes THAT safe
+                # to sit inside an HTML attribute (handles a literal `"` in the
+                # JS-string output from breaking out of the attribute early) —
+                # skipping either step is a real injection risk, not a
+                # theoretical one, given this text can contain a model's or a
+                # document's own content. Click feedback swaps the ICON itself
+                # (📋 -> ✅ -> back), not button text, since there's no text
+                # label anymore to swap.
+                _copy_payload = html_lib.escape(json.dumps(msg["content"]), quote=True)
+                _copy_html = (
+                    '<div class="msg-actions">'
+                    f'<button class="copy-native-btn" title="Copy to clipboard" '
+                    f"onclick=\"navigator.clipboard.writeText({_copy_payload}).then(()=>{{"
+                    f"this.innerText='✅';setTimeout(()=>this.innerText='📋',1400)}})"
+                    f'.catch(()=>{{this.innerText=\'⚠️\'}})">📋</button></div>'
+                )
+                if is_last_assistant:
+                    # Explicit `st.columns` (not just two stacked elements) —
+                    # Streamlit lays out top-level calls vertically by default,
+                    # so without this the HTML Copy button and the Regenerate
+                    # widget would each land on their own row regardless of how
+                    # narrow either one is. Both are small, icon-only, content-
+                    # width buttons now (no long label text to size a column
+                    # around anymore), so a narrow shared column pair followed
+                    # by a wide spacer keeps them snug together on the left
+                    # rather than stretched across the row.
+                    col_copy, col_regen, _col_spacer = st.columns([1, 1, 10])
+                    with col_copy:
+                        st.markdown(_copy_html, unsafe_allow_html=True)
+                    with col_regen:
+                        if st.button("", key=f"regen_{idx}", icon="🔁", help="Ask this again"):
+                            prev_user_text = next(
+                                (m["content"] for m in reversed(st.session_state.messages[:idx]) if m["role"] == "user"),
+                                None,
+                            )
+                            if prev_user_text:
+                                st.session_state.messages.pop(idx)
+                                st.session_state["_pending_regenerate"] = prev_user_text
+                                st.rerun()
+                else:
+                    st.markdown(_copy_html, unsafe_allow_html=True)
+
+    st.caption("⏎ Enter to send · attach a file to add it to this chat's knowledge base")
+    user_input = st.chat_input(
+        "Message the assistant, or attach a document to add it to the knowledge base...",
+        accept_file="multiple",
+        file_type=["txt", "md", "csv", "pdf", "docx", "doc"],
+    )
+
+    # A "Regenerate" click on the last message (see the history loop above)
+    # stashes the preceding user text here and reruns — picked up as if it were
+    # fresh chat_input, EXCEPT the user bubble/message-append below is skipped
+    # for it (that turn's user message is already in session_state; regenerate
+    # only replaces the assistant's reply, never duplicates the question).
+    _pending_regenerate = st.session_state.pop("_pending_regenerate", None)
+    _pending_research_prompt = st.session_state.pop("_pending_research_prompt", None)
+    is_regenerate = _pending_regenerate is not None
+    if is_regenerate:
+        text, files = _pending_regenerate, []
+    elif _pending_research_prompt is not None:
+        text, files = _pending_research_prompt, []
+    elif user_input:
+        text = user_input if isinstance(user_input, str) else user_input.text
+        files = [] if isinstance(user_input, str) else user_input.files
+    else:
+        text, files = None, []
+
+    if text or files:
+        # Attach-in-chat is PER-CHAT scope (see module docstring) — uses
+        # chat_ingested_hashes/_record_chat_upload, not the global ones the
+        # sidebar uploader uses.
+        for f in files:
+            content = f.read()
+            content_hash = hashlib.sha256(content).hexdigest()
+            if content_hash in st.session_state.chat_ingested_hashes:
+                continue  # already attached in this chat — skip silently
+            with st.spinner(f"Adding {f.name} to this chat's knowledge base..."):
+                try:
+                    result = _run_async(ingest_document(content, source_name=f.name))
+                except Exception as exc:  # noqa: BLE001 - POC diagnostic surface
+                    st.session_state.messages.append(
+                        {"role": "assistant", "content": f"Couldn't ingest {f.name}: {exc!r}", "kind": "notice"}
+                    )
+                    continue
+            st.session_state.chat_ingested_hashes.add(content_hash)
+            _record_chat_upload(f.name, result["document_id"], result["chunk_count"], content_hash)
+            st.toast(f"Added {f.name} ✓", icon="✅")
+
+        if text and text.strip():
+            _display_text = text
+            _agent_text = text if (_pending_research_prompt is not None or is_regenerate) else (
+                _mode_instruction(st.session_state.research_mode) + "\n\nUser request: " + text
+            )
+            if not is_regenerate:
+                st.session_state.messages.append({"role": "user", "content": _display_text})
+                with st.chat_message("user"):
+                    st.write(_display_text)
+
+            _TYPING_HTML = (
+                '<div class="typing-indicator"><span></span><span></span><span></span></div>'
+            )
+            # Rough, deliberately approximate step count for the progress bar
+            # below — turns don't all hit the same nodes (a pure web-search
+            # turn never touches `analyze_chunk`, a single-document answer
+            # skips `summarize_document`), so there's no single "total steps"
+            # to compute honestly ahead of time. Treated as a visual "still
+            # moving forward" signal, not a literal percentage — capped short
+            # of 100% until the turn actually finishes.
+            _PROGRESS_STEP_GUESS = 4
+
+            async def _consume(built, agent_query):
+                import html as html_lib
+
+                status_box = st.status("Working...", expanded=False)
+                progress_box = st.empty()
+                text_box = st.empty()
+                progress_box.progress(0.05, text=None)
+                # Animated dots instead of a bare blank area — communicates
+                # "alive, still working" for the gap between the status updates
+                # above and the first real token arriving below.
+                text_box.markdown(_TYPING_HTML, unsafe_allow_html=True)
+                accumulated = ""
+                steps_seen = 0
+                final_outcome = None
+                async for event in astream_langgraph_turn(built, agent_query, thread_id=st.session_state.thread_id):
+                    if event["type"] == "status":
+                        status_box.update(label=event["text"])
+                        steps_seen += 1
+                        progress_box.progress(min(0.9, steps_seen / _PROGRESS_STEP_GUESS))
+                    elif event["type"] == "token":
+                        accumulated += event["text"]
+                        # Escaped (HTML-special chars only, quotes left alone so
+                        # rare markdown title-attribute quotes still render) +
+                        # a blinking caret, for the LIVE in-progress view only —
+                        # the final render below reverts to the exact original
+                        # plain `st.markdown(accumulated)` call, unescaped, so
+                        # the persisted message's formatting is byte-for-byte
+                        # what it always was.
+                        text_box.markdown(
+                            html_lib.escape(accumulated, quote=False) + ' <span class="stream-caret">▌</span>',
+                            unsafe_allow_html=True,
+                        )
+                    elif event["type"] == "final":
+                        final_outcome = event
+                progress_box.progress(1.0)
+                progress_box.empty()
+                text_box.markdown(accumulated)  # final, unescaped render — see comment above
+                status_box.update(label="Done", state="complete")
+                return final_outcome
+
+            with st.chat_message("assistant", avatar=_ASSISTANT_AVATAR):
+                outcome = None
+                error_text = None
+                try:
+                    # Agent/checkpointer construction moved inside this same
+                    # try/except (and this same visible chat bubble) — it used
+                    # to run before this block, unguarded and with no status
+                    # indicator, so a real failure or just a slow first-ever
+                    # `chat_history/checkpoints.db` setup looked like "nothing happens" with
+                    # zero feedback. First call after a fresh install/restart
+                    # does real disk I/O now (AsyncSqliteSaver), unlike the old
+                    # instant, zero-I/O `InMemorySaver`.
+                    with st.spinner("Setting up..."):
+                        built = _get_or_build_agent()
+                    outcome = _run_async(_consume(built, _agent_text))
+                except asyncio.TimeoutError:
+                    error_text = (
+                        f"⚠️ Sorry, this took longer than {_TURN_TIMEOUT_SECONDS}s and was stopped "
+                        "(backend or retrieval likely stalled) — please try again."
+                    )
+                except Exception as exc:  # noqa: BLE001 - POC diagnostic surface
+                    LOGGER.exception("LangGraph turn failed", exc_info=exc)
+                    tb = traceback.format_exc()
+                    error_text = f"⚠️ Sorry, that run failed: {exc!r}"
+                    # Keep the user-facing message clean, but expose the actual
+                    # exception type/traceback in an expandable diagnostic area
+                    # so hosted deployments don't collapse everything into the
+                    # unhelpful `UnexpectedResponse()` string.
+                    with st.expander("Technical error details", expanded=True):
+                        st.code(tb, language="text")
+
+                # Appended to session_state, not left as a bare `st.error(...)`
+                # call — this block always ends in `st.rerun()` a few lines
+                # down, which redraws the whole page from scratch; anything
+                # rendered only in THIS run's DOM (a transient `st.error`)
+                # vanishes the instant that rerun fires. Seen live: "an error
+                # but it disappeared instantly." A message in session_state
+                # survives the rerun and renders every time, like any other
+                # chat bubble.
+                if error_text is not None:
+                    st.error(error_text)  # still shown immediately in this run, for zero-latency feedback
+                    # "kind": "turn_error" — a REAL turn failure (timeout,
+                    # exception), not a system notice: there IS a real question
+                    # behind it, so unlike upload/delete notices this correctly
+                    # keeps Copy/Regenerate (retry) available — see the history
+                    # loop's own comment on why this is now an allow-list, not
+                    # a deny-list.
+                    st.session_state.messages.append(
+                        {"role": "assistant", "content": error_text, "kind": "turn_error"}
+                    )
+
+            if outcome is not None:
+                # meta is built from the RAW (tagged) final_answer first — it
+                # needs the `[EVID: E<n>]` markers intact to know which chunks
+                # were actually cited (see _meta_from_outcome) — only the stored
+                # chat `content` gets the tags stripped, so the bubble itself
+                # never shows raw "[EVID: E1]" text to the user.
+                meta = _meta_from_outcome(outcome)
+                if (meta.get("chunks") or meta.get("web_sources") or meta.get("used_primary_source")):
+                    st.session_state.evidence_open = True
+                st.session_state.messages.append(
+                    {
+                        "role": "assistant",
+                        "content": _strip_evidence_tags(outcome["final_answer"]),
+                        "meta": meta,
+                    }
+                )
+
+        _persist_current_chat()  # covers both the upload-only and text-message paths above
+        st.rerun()
+
+
+if _evidence_col is not None:
+    with _evidence_col:
+        _render_evidence_panel()
