@@ -153,23 +153,6 @@ def _icon(name: str, *, size: int = 20, color: str = "currentColor") -> str:
     return svg
 
 
-def _render_sidebar_toggle() -> None:
-    """Render an always-available fallback control for Streamlit's native sidebar.
-
-    Streamlit 1.61 can leave the native collapsed control unreachable after the
-    sidebar is collapsed. The control below forwards a real click to the native
-    React button, so the framework remains the source of truth for sidebar state.
-    """
-    label = "Open sidebar"
-    html = f"""
-    <button class="ef-sidebar-toggle" type="button" aria-label="{label}" title="{label}"
-      onclick="(function(){{const b=document.querySelector('[data-testid=\"stSidebarCollapseButton\"] button')||document.querySelector('[data-testid=\"stSidebarCollapseButton\"]'); if(b){{b.click(); return;}} const old=document.querySelector('[data-testid=\"collapsedControl\"] button')||document.querySelector('[data-testid=\"collapsedControl\"]'); if(old) old.click();}})()">
-      <span>☰</span>
-    </button>
-    """
-    st.markdown(html, unsafe_allow_html=True)
-
-
 # Favicon: the bundled robot.svg (see _ICONS_DIR above) rather than a bare
 # emoji — `st.set_page_config`'s `page_icon` accepts a local file path and
 # serves it through Streamlit's own media file manager (confirmed directly
@@ -314,35 +297,42 @@ _APP_CSS = """
         transition: margin-left 0.25s ease, width 0.25s ease;
     }
 
-    /* Streamlit 1.61 can hide the native collapsed-sidebar control. Keep a
-       tiny fallback affordance visible ONLY while the sidebar is collapsed;
-       it forwards the click to Streamlit's real React control. */
-    .ef-sidebar-toggle {
-        display: none;
-        position: fixed;
-        top: 12px;
-        left: 12px;
-        z-index: 100000;
-        width: 40px;
-        height: 40px;
-        align-items: center;
-        justify-content: center;
-        border: 1px solid var(--ef-border-strong);
-        border-radius: 12px;
-        background: color-mix(in srgb, var(--ef-surface) 92%, transparent);
-        color: var(--ef-text);
-        box-shadow: 0 10px 28px color-mix(in srgb,#0f172a 12%,transparent);
+    /* Sidebar reopen fix: keep Streamlit's OWN collapsed control visible and
+       clickable. We do not inject a second HTML/JS button because Streamlit
+       sanitizes event-bearing HTML in some deployments, which can surface the
+       raw markup in the page. Support current and legacy test IDs. */
+    [data-testid="stSidebarCollapsedControl"],
+    [data-testid="collapsedControl"] {
+        display: flex !important;
+        visibility: visible !important;
+        opacity: 1 !important;
+        pointer-events: auto !important;
+        position: fixed !important;
+        top: 12px !important;
+        left: 12px !important;
+        z-index: 100000 !important;
+    }
+    [data-testid="stSidebarCollapsedControl"] button,
+    [data-testid="collapsedControl"] button,
+    [data-testid="stSidebarCollapseButton"] button {
+        visibility: visible !important;
+        opacity: 1 !important;
+        pointer-events: auto !important;
+        min-width: 40px !important;
+        min-height: 40px !important;
+        border: 1px solid var(--ef-border-strong) !important;
+        border-radius: 12px !important;
+        background: color-mix(in srgb, var(--ef-surface) 94%, transparent) !important;
+        color: var(--ef-text) !important;
+        box-shadow: 0 10px 28px color-mix(in srgb,#0f172a 12%,transparent) !important;
         backdrop-filter: blur(14px);
-        cursor: pointer;
-        font-size: 18px;
     }
-    body:has(section[data-testid="stSidebar"][aria-expanded="false"]) .ef-sidebar-toggle {
-        display: inline-flex;
-    }
-    .ef-sidebar-toggle:hover {
+    [data-testid="stSidebarCollapsedControl"] button:hover,
+    [data-testid="collapsedControl"] button:hover,
+    [data-testid="stSidebarCollapseButton"] button:hover {
         transform: translateY(-1px);
-        border-color: color-mix(in srgb,var(--ef-accent) 48%,var(--ef-border));
-        box-shadow: 0 14px 34px color-mix(in srgb,var(--ef-accent) 12%,transparent);
+        border-color: color-mix(in srgb,var(--ef-accent) 48%,var(--ef-border)) !important;
+        box-shadow: 0 14px 34px color-mix(in srgb,var(--ef-accent) 12%,transparent) !important;
     }
 
     /* ChatGPT-like active conversation: the hero becomes a compact context
@@ -607,8 +597,6 @@ _APP_CSS = """
     </style>
     """
 st.markdown(_APP_CSS, unsafe_allow_html=True)
-
-_render_sidebar_toggle()
 
 
 def _chat_file_path(thread_id: str) -> Path:
@@ -1810,25 +1798,9 @@ else:
 if _has_messages:
     st.markdown('<div class="ef-chat-active"></div>', unsafe_allow_html=True)
 else:
-    st.markdown(
-        f'<div class="app-header">{_icon("robot", size=34)}<h1>EvidenceFlow</h1></div>',
-        unsafe_allow_html=True,
-    )
-    st.markdown(
-        '<div class="app-subtitle">Agentic RAG for grounded research across your documents, the web, and trusted primary sources.</div>',
-        unsafe_allow_html=True,
-    )
-    st.markdown(
-        """
-        <div class="ef-capability-strip" aria-label="EvidenceFlow capabilities">
-          <span class="ef-capability"><span class="ef-cap-dot"></span>Agentic routing</span>
-          <span class="ef-capability"><span class="ef-cap-dot web"></span>Hybrid retrieval</span>
-          <span class="ef-capability"><span class="ef-cap-dot verify"></span>Evidence verification</span>
-          <span class="ef-capability"><span class="ef-cap-dot memory"></span>Persistent threads</span>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    # The shared EvidenceFlow header is rendered by ui_theme. Keep the empty
+    # state focused on the product action rather than repeating the brand.
+    pass
 
 with _main_col:
     if _has_messages:
@@ -1851,7 +1823,7 @@ with _main_col:
                 <div class="empty-icon-wrap">{_icon("mood-empty", size=40)}</div>
                 <div class="empty-title">Ask anything. The agent chooses the path.</div>
                 <div class="empty-sub">Upload documents for grounded answers, attach a file to the next question, or ask a current question. EvidenceFlow decides whether to use your knowledge base, web research, trusted primary sources, or a combination.</div>
-                <div class="empty-actions-hint">Agentic routing <span>•</span> Evidence verification <span>•</span> Persistent research threads</div>
+                <div class="empty-actions-hint"><span>Agentic routing</span><span>•</span><span>Hybrid retrieval</span><span>•</span><span>Evidence verification</span><span>•</span><span>Persistent threads</span></div>
             </div>
             """,
             unsafe_allow_html=True,
@@ -1957,7 +1929,6 @@ with _main_col:
                 else:
                     st.markdown(_copy_html, unsafe_allow_html=True)
 
-    st.caption("⏎ Enter to send · attach a file to add it to this chat's knowledge base")
     user_input = st.chat_input(
         "Message the assistant, or attach a document to add it to the knowledge base...",
         accept_file="multiple",
