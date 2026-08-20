@@ -153,6 +153,23 @@ def _icon(name: str, *, size: int = 20, color: str = "currentColor") -> str:
     return svg
 
 
+def _render_sidebar_toggle() -> None:
+    """Render an always-available fallback control for Streamlit's native sidebar.
+
+    Streamlit 1.61 can leave the native collapsed control unreachable after the
+    sidebar is collapsed. The control below forwards a real click to the native
+    React button, so the framework remains the source of truth for sidebar state.
+    """
+    label = "Open sidebar"
+    html = f"""
+    <button class="ef-sidebar-toggle" type="button" aria-label="{label}" title="{label}"
+      onclick="(function(){{const b=document.querySelector('[data-testid=\"stSidebarCollapseButton\"] button')||document.querySelector('[data-testid=\"stSidebarCollapseButton\"]'); if(b){{b.click(); return;}} const old=document.querySelector('[data-testid=\"collapsedControl\"] button')||document.querySelector('[data-testid=\"collapsedControl\"]'); if(old) old.click();}})()">
+      <span>☰</span>
+    </button>
+    """
+    st.markdown(html, unsafe_allow_html=True)
+
+
 # Favicon: the bundled robot.svg (see _ICONS_DIR above) rather than a bare
 # emoji — `st.set_page_config`'s `page_icon` accepts a local file path and
 # serves it through Streamlit's own media file manager (confirmed directly
@@ -296,6 +313,87 @@ _APP_CSS = """
     [data-testid="stSidebar"] {
         transition: margin-left 0.25s ease, width 0.25s ease;
     }
+
+    /* Streamlit 1.61 can hide the native collapsed-sidebar control. Keep a
+       tiny fallback affordance visible ONLY while the sidebar is collapsed;
+       it forwards the click to Streamlit's real React control. */
+    .ef-sidebar-toggle {
+        display: none;
+        position: fixed;
+        top: 12px;
+        left: 12px;
+        z-index: 100000;
+        width: 40px;
+        height: 40px;
+        align-items: center;
+        justify-content: center;
+        border: 1px solid var(--ef-border-strong);
+        border-radius: 12px;
+        background: color-mix(in srgb, var(--ef-surface) 92%, transparent);
+        color: var(--ef-text);
+        box-shadow: 0 10px 28px color-mix(in srgb,#0f172a 12%,transparent);
+        backdrop-filter: blur(14px);
+        cursor: pointer;
+        font-size: 18px;
+    }
+    body:has(section[data-testid="stSidebar"][aria-expanded="false"]) .ef-sidebar-toggle {
+        display: inline-flex;
+    }
+    .ef-sidebar-toggle:hover {
+        transform: translateY(-1px);
+        border-color: color-mix(in srgb,var(--ef-accent) 48%,var(--ef-border));
+        box-shadow: 0 14px 34px color-mix(in srgb,var(--ef-accent) 12%,transparent);
+    }
+
+    /* ChatGPT-like active conversation: the hero becomes a compact context
+       bar and the conversation itself becomes the scroll surface while the
+       native Streamlit composer remains pinned to the viewport bottom. */
+    .ef-chat-topbar {
+        display:flex; align-items:center; justify-content:space-between; gap:1rem;
+        margin:0 0 .85rem; padding:.65rem .8rem;
+        border:1px solid var(--ef-border); border-radius:14px;
+        background:color-mix(in srgb,var(--ef-surface) 88%,transparent);
+        backdrop-filter:blur(14px);
+        box-shadow:0 8px 24px color-mix(in srgb,#0f172a 5%,transparent);
+    }
+    .ef-chat-topbar strong { font-size:.88rem; color:var(--ef-text); }
+    .ef-chat-topbar span { margin-left:.5rem; color:var(--ef-muted); font-size:.72rem; }
+    .ef-agent-badge { display:inline-flex; align-items:center; gap:.38rem; padding:.28rem .55rem; border-radius:999px;
+        border:1px solid color-mix(in srgb,var(--ef-accent) 24%,var(--ef-border));
+        background:color-mix(in srgb,var(--ef-accent) 7%,var(--ef-surface));
+        color:var(--ef-accent); font-size:.68rem; font-weight:750; white-space:nowrap; }
+    .ef-agent-badge span { width:6px; height:6px; border-radius:50%; background:#10b981; box-shadow:0 0 0 4px rgba(16,185,129,.10); }
+    body:has(.ef-chat-active) [data-testid="stAppViewContainer"]>.main {
+        height:100vh; overflow-y:auto; overscroll-behavior:contain;
+        scrollbar-gutter:stable;
+    }
+    body:has(.ef-chat-active) [data-testid="stAppViewContainer"]>.main .block-container {
+        min-height:100%; padding-bottom:7.5rem!important;
+    }
+    @media (max-width: 720px) {
+        .ef-chat-topbar span { display:none; }
+        .ef-chat-topbar { margin-bottom:.55rem; }
+        .ef-sidebar-toggle { top:8px; left:8px; width:38px; height:38px; }
+    }
+
+    .ef-sidebar-brand {
+        display:flex; align-items:center; gap:.65rem; margin:.1rem 0 .75rem;
+    }
+    .ef-brand-mark {
+        display:grid; place-items:center; width:34px; height:34px; border-radius:11px;
+        background:linear-gradient(135deg,var(--ef-accent),var(--ef-accent-2));
+        color:#fff; font-weight:850; box-shadow:0 8px 22px color-mix(in srgb,var(--ef-accent) 18%,transparent);
+    }
+    .ef-sidebar-brand strong { display:block; color:var(--ef-text); font-size:.9rem; }
+    .ef-sidebar-brand span { display:block; color:var(--ef-muted); font-size:.64rem; margin-top:.08rem; }
+    .ef-agent-status {
+        display:flex; align-items:center; gap:.55rem; padding:.55rem .65rem; margin-bottom:.8rem;
+        border:1px solid color-mix(in srgb,#10b981 22%,var(--ef-border)); border-radius:12px;
+        background:color-mix(in srgb,#10b981 5%,var(--ef-surface));
+    }
+    .ef-agent-status > span { width:7px; height:7px; border-radius:50%; background:#10b981; box-shadow:0 0 0 4px rgba(16,185,129,.10); flex:0 0 auto; }
+    .ef-agent-status strong { display:block; color:var(--ef-text); font-size:.7rem; }
+    .ef-agent-status small { display:block; color:var(--ef-muted); font-size:.6rem; margin-top:.08rem; }
 
     /* Sidebar section labels with an inline icon */
     .sidebar-heading {
@@ -510,143 +608,7 @@ _APP_CSS = """
     """
 st.markdown(_APP_CSS, unsafe_allow_html=True)
 
-st.markdown(
-    f'<div class="app-header">{_icon("robot", size=34)}<h1>Document Research Assistant</h1></div>',
-    unsafe_allow_html=True,
-)
-st.markdown(
-    '<div class="app-subtitle">Ask a question, or attach a document to add it to the knowledge base — '
-    "the agent decides on its own whether it needs the knowledge base, the web, both, or neither.</div>",
-    unsafe_allow_html=True,
-)
-st.markdown(
-    """
-    <div class="ef-capability-strip" aria-label="EvidenceFlow capabilities">
-      <span class="ef-capability"><span class="ef-cap-dot"></span>Hybrid retrieval</span>
-      <span class="ef-capability"><span class="ef-cap-dot web"></span>Web-aware routing</span>
-      <span class="ef-capability"><span class="ef-cap-dot verify"></span>Evidence verification</span>
-      <span class="ef-capability"><span class="ef-cap-dot memory"></span>Persistent threads</span>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
-
-st.markdown(
-    "<div class=\"ef-section-kicker\">RESEARCH CONTROLS</div>",
-    unsafe_allow_html=True,
-)
-
-try:
-    if _BACKEND == "huggingface":
-        from retrieval.rag_pipeline import get_hf_token
-
-        get_hf_token()
-    elif _BACKEND == "gemini-api":
-        get_gemini_api_key()
-except RuntimeError as exc:
-    st.error(str(exc))
-    st.stop()
-
-# Checked here, at page load, not just lazily inside `_build_checkpointer` —
-# a missing/broken dependency deep inside a lazy call, only reached once a
-# chat message triggers agent construction, has no visible signal at all
-# until that point: no error, no spinner, nothing, which is indistinguishable
-# from a genuine hang. Failing loud here instead, before anything else runs.
-try:
-    import aiosqlite  # noqa: F401
-    from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver  # noqa: F401
-except ImportError as exc:
-    st.error(
-        f"Missing dependency for chat history: {exc!r}. This needs "
-        "`langgraph-checkpoint-sqlite` (see requirements.txt) installed in "
-        "THIS server process's venv — `pip install -r requirements.txt`, "
-        "then fully restart `streamlit run app/streamlit_app.py` (stop it with "
-        "Ctrl+C first; clicking \"Rerun\" in the browser re-executes the "
-        "script but does NOT reload a newly-installed dependency into an "
-        "already-running process)."
-    )
-    st.stop()
-
-
-def _chat_file_path(thread_id: str) -> Path:
-    return _CHAT_HISTORY_DIR / f"{thread_id}.json"
-
-
-def _load_chat_store() -> dict:
-    """Each conversation is its own file under chat_history/ (by request —
-    a real, separately-readable file per chat, not one combined blob) —
-    <thread_id>.json holds that thread's title/messages; checkpoints.db (the
-    LangGraph checkpointer, see `_build_checkpointer`) and
-    uploaded_documents.json (see `_load_uploaded_docs`) live in the same
-    folder. Older chat files from before document scope went global may
-    still carry their own stale "uploaded_docs" field — harmless, just
-    unused now; `_load_uploaded_docs` is what migrates that old per-chat
-    data into the new global registry, once, the first time it's missing."""
-    _CHAT_HISTORY_DIR.mkdir(parents=True, exist_ok=True)
-    threads = []
-    for f in _CHAT_HISTORY_DIR.glob("*.json"):
-        if f == _UPLOADED_DOCS_PATH:
-            continue
-        try:
-            threads.append(json.loads(f.read_text(encoding="utf-8")))
-        except Exception:  # noqa: BLE001 - corrupt/partial file, skip rather than crash the app
-            continue
-    return {"threads": threads}
-
-
-def _load_uploaded_docs() -> list[dict]:
-    """Global document registry, `chat_history/uploaded_documents.json` —
-    by explicit request, uploads are no longer scoped to the chat they
-    happened in (see module docstring for why). One-time migration on first
-    load if this file doesn't exist yet: earlier versions stored each
-    chat's uploads in that chat's OWN `uploaded_docs` field, which would
-    otherwise strand any already-uploaded document with no path back into
-    scope — aggregated here instead (deduped by document_id) so nothing
-    already in Qdrant becomes silently unreachable."""
-    if _UPLOADED_DOCS_PATH.exists():
-        try:
-            return json.loads(_UPLOADED_DOCS_PATH.read_text(encoding="utf-8"))
-        except Exception:  # noqa: BLE001 - corrupt/partial file, start fresh rather than crash the app
-            return []
-
-    migrated: dict[str, dict] = {}
-    for f in _CHAT_HISTORY_DIR.glob("*.json"):
-        if f == _UPLOADED_DOCS_PATH:
-            continue
-        try:
-            thread = json.loads(f.read_text(encoding="utf-8"))
-        except Exception:  # noqa: BLE001
-            continue
-        for doc in thread.get("uploaded_docs", []) or []:
-            migrated.setdefault(doc["document_id"], doc)
-    docs = list(migrated.values())
-    if docs:
-        _CHAT_HISTORY_DIR.mkdir(parents=True, exist_ok=True)
-        _UPLOADED_DOCS_PATH.write_text(json.dumps(docs, indent=2), encoding="utf-8")
-    return docs
-
-
-def _save_uploaded_docs() -> None:
-    _CHAT_HISTORY_DIR.mkdir(parents=True, exist_ok=True)
-    _UPLOADED_DOCS_PATH.write_text(
-        json.dumps(st.session_state.uploaded_docs, indent=2), encoding="utf-8"
-    )
-
-
-def _messages_to_jsonable(messages: list[dict]) -> list[dict]:
-    """`meta["chunks"]` holds `RetrievedChunk` dataclass instances (see
-    rag_pipeline.py), not JSON-serializable as-is."""
-    out = []
-    for m in messages:
-        m2 = {"role": m["role"], "content": m["content"]}
-        meta = m.get("meta")
-        if meta:
-            meta2 = dict(meta)
-            if meta2.get("chunks"):
-                meta2["chunks"] = [asdict(c) for c in meta2["chunks"]]
-            m2["meta"] = meta2
-        out.append(m2)
-    return out
+_render_sidebar_toggle()
 
 
 def _messages_from_jsonable(messages: list[dict]) -> list[dict]:
@@ -672,7 +634,6 @@ def _messages_from_jsonable(messages: list[dict]) -> list[dict]:
 # LATER function gets called. Left both defined together up here rather
 # than only relocating one, so the pair stays next to each other.
 st.session_state.setdefault("messages", [])  # [{"role": "user"|"assistant", "content": str}]
-st.session_state.setdefault("research_mode", "Auto")
 st.session_state.setdefault("evidence_open", False)
 st.session_state.setdefault("selected_evidence_id", None)
 st.session_state.setdefault("evidence_checks", {})
@@ -1404,6 +1365,14 @@ def _run_status_check() -> dict:
 
 
 with st.sidebar:
+    st.markdown(
+        '<div class="ef-sidebar-brand"><div class="ef-brand-mark">✦</div><div><strong>EvidenceFlow</strong><span>Agentic RAG workspace</span></div></div>',
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        '<div class="ef-agent-status"><span></span><div><strong>Agent routing active</strong><small>Tools selected automatically</small></div></div>',
+        unsafe_allow_html=True,
+    )
     if st.button(
         "New chat",
         type="primary",
@@ -1641,31 +1610,6 @@ def _evidence_registry_for_meta(meta: dict) -> dict:
     return {"eid_to_doc": eid_to_doc, "eid_to_content": eid_to_content, "eid_to_meta": eid_to_meta}
 
 
-def _verify_evidence_now(meta: dict, eid: str) -> dict:
-    registry = _evidence_registry_for_meta(meta)
-    content = registry.get("eid_to_content", {}).get(eid, "")
-    document_id = registry.get("eid_to_doc", {}).get(eid, "")
-    ref = {"evidence_id": eid, "document_id": document_id, "content": content,
-           "retrieval_score": (registry.get("eid_to_meta", {}).get(eid) or {}).get("retrieval_score")}
-    result = verify_reference(ref, registry)
-    return {"status": result.status, "reason": result.reason}
-
-
-def _challenge_evidence(eid: str, content: str) -> None:
-    prompt = (
-        f"Challenge evidence {eid}. Re-evaluate the passage below against the available evidence "
-        "and the original research context. Look for unsupported claims, missing context, numerical/date "
-        "mismatches, or contradictory evidence. State whether the evidence should remain trusted and cite "
-        "the strongest supporting or contradicting evidence.\n\n"
-        f"Evidence {eid}: {content[:1600]}"
-    )
-    st.session_state["_pending_research_prompt"] = prompt
-    st.session_state["research_mode"] = "Contradictions"
-    st.session_state["evidence_open"] = True
-    st.rerun()
-
-
-
 def _route_summary(meta: dict | None) -> str:
     if not meta:
         return "Awaiting a research turn"
@@ -1675,12 +1619,6 @@ def _route_summary(meta: dict | None) -> str:
     if meta.get("used_primary_source"): parts.append("MCP")
     return " + ".join(parts) if parts else "No external source route"
 
-
-def _queue_research_starter(prompt: str, mode: str = "Auto") -> None:
-    st.session_state["_pending_research_prompt"] = prompt
-    st.session_state["research_mode"] = mode
-    st.session_state["evidence_open"] = False
-    st.rerun()
 
 def _render_evidence_panel() -> None:
     meta = _latest_meta()
@@ -1741,16 +1679,8 @@ def _render_evidence_panel() -> None:
             badge="Verified" if (check or {}).get("status")=="verified" else ("Needs review" if check else "Backend verified")
             doc_id=str(getattr(c,"document_id","") or "")
             st.markdown(f'<div class="ef-evidence-card {"selected" if selected else ""}"><strong>{html_lib.escape(eid)}</strong><p>{html_lib.escape(content[:420])}{"…" if len(content)>420 else ""}</p><span class="ef-evidence-badge">{html_lib.escape(badge)}</span><div class="ef-evidence-source">{html_lib.escape(doc_id or "Source passage")}</div></div>',unsafe_allow_html=True)
-            b1,b2,b3=st.columns(3,gap="small")
-            with b1:
-                if st.button("Inspect",key=f"inspect-evidence-{eid}",use_container_width=True):
-                    st.session_state.selected_evidence_id=eid; st.rerun()
-            with b2:
-                if st.button("Verify",key=f"verify-evidence-{eid}",use_container_width=True):
-                    result=_verify_evidence_now(meta,eid); st.session_state.evidence_checks[eid]=result; st.session_state.selected_evidence_id=eid
-                    st.toast(f"{eid}: {result['status']} · {result['reason']}",icon="✅" if result["status"]=="verified" else "⚠️"); st.rerun()
-            with b3:
-                if st.button("Challenge",key=f"challenge-evidence-{eid}",use_container_width=True): _challenge_evidence(eid,content)
+            if st.button("Inspect passage",key=f"inspect-evidence-{eid}",use_container_width=True):
+                st.session_state.selected_evidence_id=eid; st.rerun()
             if selected:
                 st.caption(f"Evidence {eid} · retrieval score: {getattr(c,'score',0.0):.3f}")
                 st.markdown(content)
@@ -1783,71 +1713,68 @@ def _render_evidence_panel() -> None:
         if verified_count is not None or proposed_count is not None: st.caption(f"{verified_count or 0} verified / {proposed_count or 0} proposed evidence references")
 
 
-def _mode_instruction(mode: str) -> str:
-    return {
-        "Auto": "Let the agent decide the best source strategy (knowledge base, web research, both, or neither).",
-        "Knowledge base": "Prioritize the uploaded knowledge base. Use the available documents as the primary source of truth and do not rely on web research unless strictly necessary.",
-        "Web research": "Prioritize web research for current or externally verifiable information. Cite the web sources used and distinguish them from uploaded-document evidence.",
-        "Compare": "Compare the strongest available sources side by side and explain where they agree or differ. Cite the evidence supporting each comparison.",
-        "Contradictions": "Actively look for conflicting claims, numbers, dates, or source statements and explain which evidence is stronger and why.",
-        "Summarize": "Summarize the available sources with emphasis on grounded findings, separating supported facts from uncertainty.",
-    }.get(mode, "Let the agent decide the best source strategy.")
-
-
 # Main workspace + conditional evidence workspace. The app's left sidebar remains
 # the navigation/document control plane; this area is the product workspace.
+# Main workspace + conditional evidence workspace. The agent owns routing: the UI intentionally
+# does not expose competing research modes.
 _latest = _latest_meta()
+_has_messages = bool(st.session_state.messages)
 _show_evidence = bool(_latest and st.session_state.get("evidence_open", False))
 if _show_evidence:
     _main_col, _evidence_col = st.columns([7.5, 2.8], gap="large")
 else:
     _main_col = st.container()
     _evidence_col = None
+
+if _has_messages:
+    st.markdown('<div class="ef-chat-active"></div>', unsafe_allow_html=True)
+else:
+    st.markdown(
+        f'<div class="app-header">{_icon("robot", size=34)}<h1>EvidenceFlow</h1></div>',
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        '<div class="app-subtitle">Agentic RAG for grounded research across your documents, the web, and trusted primary sources.</div>',
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        """
+        <div class="ef-capability-strip" aria-label="EvidenceFlow capabilities">
+          <span class="ef-capability"><span class="ef-cap-dot"></span>Agentic routing</span>
+          <span class="ef-capability"><span class="ef-cap-dot web"></span>Hybrid retrieval</span>
+          <span class="ef-capability"><span class="ef-cap-dot verify"></span>Evidence verification</span>
+          <span class="ef-capability"><span class="ef-cap-dot memory"></span>Persistent threads</span>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
 with _main_col:
-    _mode_options = ["Auto", "Knowledge base", "Web research", "Compare", "Contradictions", "Summarize"]
-    _mode_cols = st.columns(len(_mode_options))
-    for _mcol, _mode_name in zip(_mode_cols, _mode_options):
-        with _mcol:
-            if st.button(_mode_name, key=f"mode-{_mode_name}", use_container_width=True, type="primary" if st.session_state.research_mode == _mode_name else "secondary"):
-                st.session_state.research_mode = _mode_name
-                st.rerun()
-    st.caption(f"Research mode: **{st.session_state.research_mode}** · {_mode_instruction(st.session_state.research_mode)}")
+    if _has_messages:
+        st.markdown(
+            '<div class="ef-chat-topbar"><div><strong>EvidenceFlow</strong><span>Agentic research workspace</span></div>'
+            '<div class="ef-agent-badge"><span></span>Agent decides</div></div>',
+            unsafe_allow_html=True,
+        )
     if _latest:
         st.markdown(f'<span class="ef-route-pill"><span class="ef-route-dot"></span>Route used · {html_lib.escape(_route_summary(_latest))}</span>', unsafe_allow_html=True)
         if not st.session_state.get("evidence_open", False):
             if st.button("Open evidence workspace", icon="🔎", key="open-evidence-main"):
                 st.session_state.evidence_open=True; st.rerun()
 
-    if not st.session_state.uploaded_docs and not st.session_state.chat_uploaded_docs:
-        # Prominent, main-area signal — not just the sidebar's small "None
-        # uploaded/attached yet." captions — since the knowledge base (global +
-        # this chat's own, see `_document_ids_in_scope`) is genuinely empty: a
-        # KB question here will correctly come back empty, and the user should
-        # know why before asking, not have to infer it from a vague answer.
+    if not st.session_state.uploaded_docs and not st.session_state.chat_uploaded_docs and not _has_messages:
         st.markdown(
             f"""
             <div class="empty-state">
-                <div class="empty-kicker">RESEARCH WORKSPACE</div>
+                <div class="empty-kicker">AGENTIC RESEARCH WORKSPACE</div>
                 <div class="empty-icon-wrap">{_icon("mood-empty", size=40)}</div>
-                <div class="empty-title">Start a grounded research turn</div>
-                <div class="empty-sub">
-                    Add a document to build your knowledge scope, or attach one directly to the next question.
-                </div>
-                <div class="empty-actions-hint">Upload in the sidebar <span>•</span> Attach in chat <span>•</span> Ask anything</div>
+                <div class="empty-title">Ask anything. The agent chooses the path.</div>
+                <div class="empty-sub">Upload documents for grounded answers, attach a file to the next question, or ask a current question. EvidenceFlow decides whether to use your knowledge base, web research, trusted primary sources, or a combination.</div>
+                <div class="empty-actions-hint">No mode picker <span>•</span> No manual routing <span>•</span> No guesswork</div>
             </div>
             """,
             unsafe_allow_html=True,
         )
-        _starter_cols = st.columns(3, gap="small")
-        _starter_specs = [
-            ("Compare documents", "Compare two uploaded documents and identify the strongest supported conclusion.", "Compare"),
-            ("Find contradictions", "Find conflicting claims, numbers, or dates across the available sources.", "Contradictions"),
-            ("Research a topic", "Research a topic using the best available sources and cite only supported evidence.", "Web research"),
-        ]
-        for _col, (_label, _prompt, _mode) in zip(_starter_cols, _starter_specs):
-            with _col:
-                if st.button(_label, use_container_width=True, key=f"starter-{_label}"):
-                    _queue_research_starter(_prompt, _mode)
 
     _ASSISTANT_AVATAR = "🤖"
     _last_idx = len(st.session_state.messages) - 1
@@ -1962,12 +1889,9 @@ with _main_col:
     # for it (that turn's user message is already in session_state; regenerate
     # only replaces the assistant's reply, never duplicates the question).
     _pending_regenerate = st.session_state.pop("_pending_regenerate", None)
-    _pending_research_prompt = st.session_state.pop("_pending_research_prompt", None)
     is_regenerate = _pending_regenerate is not None
     if is_regenerate:
         text, files = _pending_regenerate, []
-    elif _pending_research_prompt is not None:
-        text, files = _pending_research_prompt, []
     elif user_input:
         text = user_input if isinstance(user_input, str) else user_input.text
         files = [] if isinstance(user_input, str) else user_input.files
@@ -1997,9 +1921,10 @@ with _main_col:
 
         if text and text.strip():
             _display_text = text
-            _agent_text = text if (_pending_research_prompt is not None or is_regenerate) else (
-                _mode_instruction(st.session_state.research_mode) + "\n\nUser request: " + text
-            )
+            # The graph is genuinely agentic: the router chooses KB, web,
+            # primary-source MCP, multiple tools, or no tool at all. The UI
+            # deliberately passes the user's request through unchanged.
+            _agent_text = text
             if not is_regenerate:
                 st.session_state.messages.append({"role": "user", "content": _display_text})
                 with st.chat_message("user"):
