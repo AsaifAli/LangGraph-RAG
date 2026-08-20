@@ -611,6 +611,87 @@ st.markdown(_APP_CSS, unsafe_allow_html=True)
 _render_sidebar_toggle()
 
 
+def _chat_file_path(thread_id: str) -> Path:
+    return _CHAT_HISTORY_DIR / f"{thread_id}.json"
+
+
+def _load_chat_store() -> dict:
+    """Each conversation is its own file under chat_history/ (by request —
+    a real, separately-readable file per chat, not one combined blob) —
+    <thread_id>.json holds that thread's title/messages; checkpoints.db (the
+    LangGraph checkpointer, see `_build_checkpointer`) and
+    uploaded_documents.json (see `_load_uploaded_docs`) live in the same
+    folder. Older chat files from before document scope went global may
+    still carry their own stale "uploaded_docs" field — harmless, just
+    unused now; `_load_uploaded_docs` is what migrates that old per-chat
+    data into the new global registry, once, the first time it's missing."""
+    _CHAT_HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+    threads = []
+    for f in _CHAT_HISTORY_DIR.glob("*.json"):
+        if f == _UPLOADED_DOCS_PATH:
+            continue
+        try:
+            threads.append(json.loads(f.read_text(encoding="utf-8")))
+        except Exception:  # noqa: BLE001 - corrupt/partial file, skip rather than crash the app
+            continue
+    return {"threads": threads}
+
+
+def _load_uploaded_docs() -> list[dict]:
+    """Global document registry, `chat_history/uploaded_documents.json` —
+    by explicit request, uploads are no longer scoped to the chat they
+    happened in (see module docstring for why). One-time migration on first
+    load if this file doesn't exist yet: earlier versions stored each
+    chat's uploads in that chat's OWN `uploaded_docs` field, which would
+    otherwise strand any already-uploaded document with no path back into
+    scope — aggregated here instead (deduped by document_id) so nothing
+    already in Qdrant becomes silently unreachable."""
+    if _UPLOADED_DOCS_PATH.exists():
+        try:
+            return json.loads(_UPLOADED_DOCS_PATH.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001 - corrupt/partial file, start fresh rather than crash the app
+            return []
+
+    migrated: dict[str, dict] = {}
+    for f in _CHAT_HISTORY_DIR.glob("*.json"):
+        if f == _UPLOADED_DOCS_PATH:
+            continue
+        try:
+            thread = json.loads(f.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001
+            continue
+        for doc in thread.get("uploaded_docs", []) or []:
+            migrated.setdefault(doc["document_id"], doc)
+    docs = list(migrated.values())
+    if docs:
+        _CHAT_HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+        _UPLOADED_DOCS_PATH.write_text(json.dumps(docs, indent=2), encoding="utf-8")
+    return docs
+
+
+def _save_uploaded_docs() -> None:
+    _CHAT_HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+    _UPLOADED_DOCS_PATH.write_text(
+        json.dumps(st.session_state.uploaded_docs, indent=2), encoding="utf-8"
+    )
+
+
+def _messages_to_jsonable(messages: list[dict]) -> list[dict]:
+    """`meta["chunks"]` holds `RetrievedChunk` dataclass instances (see
+    rag_pipeline.py), not JSON-serializable as-is."""
+    out = []
+    for m in messages:
+        m2 = {"role": m["role"], "content": m["content"]}
+        meta = m.get("meta")
+        if meta:
+            meta2 = dict(meta)
+            if meta2.get("chunks"):
+                meta2["chunks"] = [asdict(c) for c in meta2["chunks"]]
+            m2["meta"] = meta2
+        out.append(m2)
+    return out
+
+
 def _messages_from_jsonable(messages: list[dict]) -> list[dict]:
     out = []
     for m in messages:
@@ -1685,7 +1766,7 @@ def _render_evidence_panel() -> None:
                 st.caption(f"Evidence {eid} · retrieval score: {getattr(c,'score',0.0):.3f}")
                 st.markdown(content)
         if quality.get("evidence_conflicts"):
-            st.warning("Potential evidence conflict detected. Use Challenge on the affected passage to investigate.")
+            st.warning("Potential evidence conflict detected. The agent has flagged this for review; inspect the cited passages below for the supporting context.")
         if meta.get("abstained"):
             st.error("The answer was withheld because sufficient verified evidence was not available.")
 
@@ -1770,7 +1851,7 @@ with _main_col:
                 <div class="empty-icon-wrap">{_icon("mood-empty", size=40)}</div>
                 <div class="empty-title">Ask anything. The agent chooses the path.</div>
                 <div class="empty-sub">Upload documents for grounded answers, attach a file to the next question, or ask a current question. EvidenceFlow decides whether to use your knowledge base, web research, trusted primary sources, or a combination.</div>
-                <div class="empty-actions-hint">No mode picker <span>•</span> No manual routing <span>•</span> No guesswork</div>
+                <div class="empty-actions-hint">Agentic routing <span>•</span> Evidence verification <span>•</span> Persistent research threads</div>
             </div>
             """,
             unsafe_allow_html=True,
