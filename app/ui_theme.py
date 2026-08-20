@@ -92,11 +92,33 @@ body {{ overflow-x:hidden!important; }}
 }}
 
 
-/* Streamlit framework chrome. */
+/* Streamlit framework chrome.
+   Keep the native sidebar collapse/expand control alive. Streamlit 1.38+
+   uses stSidebarCollapseButton for this control; older releases used
+   collapsedControl. The toolbar/header cleanup must never hide, disable,
+   or sit above this control, otherwise a collapsed sidebar cannot be
+   reopened. */
 #MainMenu,footer,[data-testid="stDecoration"],[data-testid="stToolbar"],
 [data-testid="stStatusWidget"],.stDeployButton,[data-testid="stAppDeployButton"],
 header [data-testid="stHeaderActionElements"] {{display:none!important;}}
 header[data-testid="stHeader"] {{background:transparent!important;}}
+
+/* Native sidebar toggle — current + legacy Streamlit selectors. */
+[data-testid="stSidebarCollapseButton"],
+[data-testid="collapsedControl"] {{
+  display:flex!important;
+  visibility:visible!important;
+  opacity:1!important;
+  pointer-events:auto!important;
+  position:relative!important;
+  z-index:10000!important;
+}}
+[data-testid="stSidebarCollapseButton"] button,
+[data-testid="collapsedControl"] button {{
+  pointer-events:auto!important;
+  visibility:visible!important;
+  opacity:1!important;
+}}
 
 [data-testid="stAppViewContainer"]>.main .block-container {{
   max-width:1500px!important;
