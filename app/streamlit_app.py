@@ -601,6 +601,31 @@ _APP_CSS = """
 
     .ef-route-pill { display:inline-flex;align-items:center;gap:.38rem;padding:.30rem .58rem;border-radius:999px;border:1px solid var(--ef-border);background:color-mix(in srgb,var(--ef-accent) 7%,var(--ef-surface));color:var(--ef-text-2);font-size:.70rem;font-weight:700;margin:.05rem 0 .65rem; }
     .ef-route-dot { width:6px;height:6px;border-radius:50%;background:var(--ef-accent);box-shadow:0 0 0 4px color-mix(in srgb,var(--ef-accent) 10%,transparent); }
+    .ef-answer-summary {
+        display:flex; align-items:center; justify-content:space-between; gap:.7rem;
+        flex-wrap:wrap; margin:0 0 .65rem; padding:.58rem .68rem;
+        border:1px solid var(--ef-border); border-radius:13px;
+        background:linear-gradient(180deg,color-mix(in srgb,var(--ef-accent) 4%,var(--ef-surface-2)),var(--ef-surface-2));
+    }
+    .ef-answer-summary-main { display:flex; align-items:center; gap:.45rem; min-width:0; flex-wrap:wrap; }
+    .ef-answer-kicker { color:var(--ef-accent); font-size:.58rem; font-weight:900; letter-spacing:.13em; text-transform:uppercase; }
+    .ef-answer-route { color:var(--ef-text-2); font-size:.69rem; font-weight:760; }
+    .ef-answer-dot { width:7px; height:7px; border-radius:50%; background:#10b981; box-shadow:0 0 0 4px color-mix(in srgb,#10b981 10%,transparent); }
+    .ef-answer-dot.warn { background:#f59e0b; box-shadow:0 0 0 4px color-mix(in srgb,#f59e0b 10%,transparent); }
+    .ef-answer-dot.muted { background:var(--ef-muted); box-shadow:none; }
+    .ef-answer-metrics { display:flex; align-items:center; gap:.35rem; flex-wrap:wrap; }
+    .ef-answer-metric { display:inline-flex; align-items:center; gap:.28rem; padding:.24rem .42rem; border:1px solid var(--ef-border); border-radius:999px; color:var(--ef-muted); font-size:.6rem; background:var(--ef-surface); }
+    .ef-answer-metric strong { color:var(--ef-text-2); font-size:.61rem; }
+    .ef-answer-quality { color:#10b981; font-weight:850; }
+    .ef-answer-quality.warn { color:#f59e0b; }
+    .ef-answer-quality.muted { color:var(--ef-muted); }
+    .ef-answer-body { padding:0 .1rem .15rem; }
+    .ef-evidence-mini {
+        margin:.45rem 0 .2rem; padding:.52rem .62rem; border-left:3px solid var(--ef-accent);
+        border-radius:0 10px 10px 0; background:color-mix(in srgb,var(--ef-accent) 4%,var(--ef-surface-2));
+        color:var(--ef-muted); font-size:.66rem;
+    }
+    .ef-evidence-mini strong { color:var(--ef-text-2); }
     .ef-evidence-summary { display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:.4rem;margin:.55rem 0 .75rem; }
     .ef-evidence-stat { padding:.52rem .55rem;border:1px solid var(--ef-border);border-radius:10px;background:var(--ef-surface-2); }
     .ef-evidence-stat strong { display:block;color:var(--ef-text)!important;font-size:.85rem; }
@@ -1338,6 +1363,92 @@ def _render_citation_chips(
 """)
 
 
+def _render_answer_summary(meta: dict, *, idx: int, is_latest: bool) -> None:
+    """Compact evidence-first summary shown above each real assistant answer."""
+    quality = meta.get("quality") or {}
+    grounding = str(meta.get("grounding_status") or ("Abstained" if meta.get("abstained") else "Grounded"))
+    route = _route_summary(meta)
+    cited_ids = set(meta.get("cited_evidence_ids") or [])
+    all_chunks = meta.get("chunks") or []
+    cited_chunks = [c for c in all_chunks if getattr(c, "evidence_id", None) in cited_ids] if cited_ids else []
+    if not cited_chunks and all_chunks and not cited_ids:
+        cited_chunks = all_chunks
+    kb_count = len(cited_chunks)
+    doc_count = len({str(getattr(c, "document_id", "") or "") for c in cited_chunks if getattr(c, "document_id", None)})
+    web_count = len(meta.get("web_sources") or [])
+    primary_used = bool(meta.get("used_primary_source"))
+    coverage = quality.get("citation_coverage")
+    if isinstance(coverage, (int, float)):
+        coverage_label = f"{coverage:.0%}" if 0 <= coverage <= 1 else f"{coverage:.0f}%"
+    else:
+        coverage_label = None
+
+    confidence = quality.get("confidence")
+    confidence_text = str(confidence).strip().title() if confidence not in (None, "", "n/a", "N/A") else None
+    conflicts = quality.get("evidence_conflicts") or []
+
+    if meta.get("abstained") or grounding.lower() in {"abstained", "blocked", "failed"}:
+        dot_class = "warn"
+        quality_text = "Needs review"
+        quality_class = "warn"
+    elif grounding.lower() in {"grounded", "verified", "high"}:
+        dot_class = ""
+        quality_text = confidence_text or quality.get("quality_label") or "Grounded"
+        quality_class = ""
+    else:
+        dot_class = "muted"
+        quality_text = confidence_text or quality.get("quality_label") or grounding
+        quality_class = "muted"
+
+    metrics = []
+    if kb_count:
+        label = "passage" if kb_count == 1 else "passages"
+        metrics.append(f'<span class="ef-answer-metric"><strong>{kb_count}</strong> {label}</span>')
+    if doc_count:
+        label = "document" if doc_count == 1 else "documents"
+        metrics.append(f'<span class="ef-answer-metric"><strong>{doc_count}</strong> {label}</span>')
+    if web_count:
+        suffix = "" if web_count == 1 else "s"
+        metrics.append(f'<span class="ef-answer-metric"><strong>{web_count}</strong> web source{suffix}</span>')
+    if primary_used:
+        metrics.append('<span class="ef-answer-metric"><strong>1</strong> primary source</span>')
+    if coverage_label:
+        metrics.append(f'<span class="ef-answer-metric"><strong>{html_lib.escape(coverage_label)}</strong> coverage</span>')
+    if conflicts:
+        suffix = "" if len(conflicts) == 1 else "s"
+        metrics.append(f'<span class="ef-answer-metric"><strong>{len(conflicts)}</strong> conflict{suffix}</span>')
+
+    st.markdown(
+        f'''<div class="ef-answer-summary">
+              <div class="ef-answer-summary-main">
+                <span class="ef-answer-dot {dot_class}"></span>
+                <span class="ef-answer-kicker">Evidence check</span>
+                <span class="ef-answer-route">{html_lib.escape(route)}</span>
+                <span class="ef-answer-quality {quality_class}">{html_lib.escape(str(quality_text))}</span>
+              </div>
+              <div class="ef-answer-metrics">{"".join(metrics)}</div>
+            </div>''',
+        unsafe_allow_html=True,
+    )
+
+    if conflicts:
+        suffix = "" if len(conflicts) == 1 else "s"
+        st.markdown(
+            f'<div class="ef-evidence-mini"><strong>Potential evidence conflict</strong> · {len(conflicts)} cited claim{suffix} need source-level review.</div>',
+            unsafe_allow_html=True,
+        )
+
+    if is_latest and (kb_count or web_count or primary_used):
+        if st.button(
+            "Open evidence workspace",
+            icon="🔎",
+            key=f"answer-evidence-{idx}",
+            help="Inspect the cited passages, web sources, and agent trace for this answer",
+        ):
+            st.session_state.evidence_open = True
+            st.rerun()
+
+
 def _render_message_meta(meta: dict, idx: int) -> None:
     """`idx` (the message's position in `st.session_state.messages`) gives
     the Plan/Web-sources expanders below a stable, unique `key=` per
@@ -1857,12 +1968,6 @@ with _main_col:
             '<div class="ef-agent-badge"><span></span>Agent decides the route</div></div>',
             unsafe_allow_html=True,
         )
-    if _latest:
-        st.markdown(f'<span class="ef-route-pill"><span class="ef-route-dot"></span>Route used · {html_lib.escape(_route_summary(_latest))}</span>', unsafe_allow_html=True)
-        if not st.session_state.get("evidence_open", False):
-            if st.button("Open evidence workspace", icon="🔎", key="open-evidence-main"):
-                st.session_state.evidence_open=True; st.rerun()
-
     if not _has_messages:
         _doc_count = len(st.session_state.uploaded_docs) + len(st.session_state.chat_uploaded_docs)
         _thread_count = len(st.session_state.chat_store.get("threads", []))
@@ -1919,7 +2024,13 @@ with _main_col:
     for idx, msg in enumerate(st.session_state.messages):
         avatar = _ASSISTANT_AVATAR if msg["role"] == "assistant" else None
         with st.chat_message(msg["role"], avatar=avatar):
-            st.write(msg["content"])
+            if msg["role"] == "assistant" and msg.get("meta"):
+                _render_answer_summary(msg["meta"], idx=idx, is_latest=(idx == _last_idx))
+                st.markdown('<div class="ef-answer-body">', unsafe_allow_html=True)
+                st.write(msg["content"])
+                st.markdown('</div>', unsafe_allow_html=True)
+            else:
+                st.write(msg["content"])
             if msg.get("meta"):
                 _render_message_meta(msg["meta"], idx)
 
