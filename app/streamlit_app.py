@@ -93,7 +93,6 @@ from pathlib import Path
 
 import streamlit as st
 
-from sidebar_toggle import render_sidebar_toggle  # noqa: E402
 
 LOGGER = logging.getLogger(__name__)
 
@@ -314,26 +313,38 @@ _APP_CSS = """
         color: var(--ef-text) !important;
     }
 
-    /* Reliable fallback affordance for Streamlit versions where the native
-       collapsed control is visibility-hidden. */
-    [data-testid="stIFrame"] {
+    /* Native sidebar affordance — do not replace Streamlit's control with
+       injected HTML/JS. When collapsed, keep Streamlit's own control visible,
+       clickable, and above the app canvas. */
+    [data-testid="stSidebarCollapseButton"],
+    [data-testid="stSidebarCollapsedControl"],
+    [data-testid="collapsedControl"] {
+        z-index: 100000 !important;
+    }
+    [data-testid="stSidebarCollapseButton"] button,
+    [data-testid="stSidebarCollapsedControl"] button,
+    [data-testid="collapsedControl"] button {
+        visibility: visible !important;
+        opacity: 1 !important;
+        display: flex !important;
+        pointer-events: auto !important;
+        color: var(--ef-text) !important;
+        background: color-mix(in srgb, var(--ef-surface) 92%, transparent) !important;
+        border: 1px solid var(--ef-border-strong) !important;
+        border-radius: 12px !important;
+        box-shadow: 0 10px 30px color-mix(in srgb,#0f172a 16%,transparent) !important;
+        width: 42px !important;
+        height: 42px !important;
+        align-items: center !important;
+        justify-content: center !important;
+    }
+    [data-testid="stSidebarCollapsedControl"],
+    [data-testid="collapsedControl"] {
         position: fixed !important;
         top: 76px !important;
         left: 14px !important;
-        width: 48px !important;
-        height: 48px !important;
-        z-index: 100001 !important;
-        border: 0 !important;
-        background: transparent !important;
-        pointer-events: none !important;
     }
-    [data-testid="stIFrame"] iframe {
-        width: 48px !important;
-        height: 48px !important;
-        border: 0 !important;
-        background: transparent !important;
-        pointer-events: auto !important;
-    }
+
 
     /* ChatGPT-like active conversation: the hero becomes a compact context
        bar and the conversation itself becomes the scroll surface while the
@@ -407,74 +418,75 @@ _APP_CSS = """
     }
     .doc-chip svg { flex-shrink: 0; opacity: 0.7; }
 
-    /* Landing experience — intentionally dense enough to feel like a product,
-       while disappearing completely once the first conversation starts. */
+    /* Landing experience — compact, high-signal research product surface. */
     .ef-landing {
-        margin: .35rem 0 1.1rem;
+        margin: .35rem 0 1.25rem;
         animation: fade-in-up .5s ease both;
     }
     .ef-landing-hero {
-        display:grid; grid-template-columns:minmax(0,1.15fr) minmax(360px,.85fr);
-        gap:1rem; padding:1.45rem; border-radius:22px;
+        display:grid; grid-template-columns:minmax(0,1.22fr) minmax(330px,.78fr);
+        gap:1.1rem; padding:1.35rem 1.4rem; border-radius:22px;
         border:1px solid var(--ef-border-strong);
         background:
-          radial-gradient(520px 260px at 100% 0%, color-mix(in srgb,var(--ef-accent-2) 16%,transparent),transparent 62%),
-          linear-gradient(135deg,color-mix(in srgb,var(--ef-accent) 10%,var(--ef-surface)),var(--ef-surface));
-        box-shadow:0 20px 55px color-mix(in srgb,#0f172a 10%,transparent);
+          radial-gradient(620px 290px at 95% 0%, color-mix(in srgb,var(--ef-accent-2) 17%,transparent),transparent 60%),
+          radial-gradient(420px 260px at 0% 100%, color-mix(in srgb,var(--ef-accent) 10%,transparent),transparent 65%),
+          linear-gradient(135deg,color-mix(in srgb,var(--ef-accent) 9%,var(--ef-surface)),var(--ef-surface));
+        box-shadow:0 22px 65px color-mix(in srgb,#0f172a 13%,transparent);
         overflow:hidden; position:relative;
     }
-    .ef-landing-hero::after {
-        content:""; position:absolute; width:190px; height:190px; border-radius:50%;
-        right:-85px; top:-95px; border:1px solid color-mix(in srgb,var(--ef-accent) 20%,transparent);
-        box-shadow:0 0 0 22px color-mix(in srgb,var(--ef-accent) 3%,transparent), 0 0 0 44px color-mix(in srgb,var(--ef-accent) 2%,transparent);
-        pointer-events:none;
+    .ef-landing-hero::before {
+        content:""; position:absolute; inset:0;
+        background:linear-gradient(120deg,transparent 25%,rgba(255,255,255,.035) 50%,transparent 75%);
+        transform:translateX(-100%); animation: ef-sheen 7s ease-in-out infinite; pointer-events:none;
     }
-    .ef-landing-copy { position:relative; z-index:1; padding:.35rem .2rem; }
-    .ef-landing-kicker { color:var(--ef-accent); font-size:.67rem; font-weight:850; letter-spacing:.17em; }
-    .ef-landing-title { margin:.55rem 0 .55rem; color:var(--ef-text); font-size:clamp(1.65rem,3vw,2.35rem); line-height:1.08; font-weight:850; letter-spacing:-.035em; }
+    @keyframes ef-sheen { 0%,55%{transform:translateX(-100%)} 72%,100%{transform:translateX(100%)} }
+    .ef-landing-copy { position:relative; z-index:1; padding:.25rem .15rem; }
+    .ef-landing-kicker { color:var(--ef-accent); font-size:.65rem; font-weight:850; letter-spacing:.17em; }
+    .ef-landing-title { margin:.5rem 0 .55rem; color:var(--ef-text); font-size:clamp(2rem,3.4vw,3rem); line-height:1.02; font-weight:900; letter-spacing:-.045em; }
     .ef-landing-title span { background:linear-gradient(90deg,var(--ef-accent),var(--ef-accent-2)); -webkit-background-clip:text; background-clip:text; color:transparent; }
-    .ef-landing-sub { max-width:650px; color:var(--ef-muted); font-size:.88rem; line-height:1.65; }
-    .ef-landing-pills { display:flex; flex-wrap:wrap; gap:.45rem; margin-top:.9rem; }
-    .ef-landing-pill { display:inline-flex; align-items:center; gap:.35rem; padding:.38rem .58rem; border:1px solid var(--ef-border); border-radius:999px; background:color-mix(in srgb,var(--ef-surface-2) 85%,transparent); color:var(--ef-text-2); font-size:.68rem; font-weight:700; }
+    .ef-landing-sub { max-width:720px; color:var(--ef-muted); font-size:.88rem; line-height:1.58; }
+    .ef-landing-pills { display:flex; flex-wrap:wrap; gap:.45rem; margin-top:.8rem; }
+    .ef-landing-pill { display:inline-flex; align-items:center; gap:.35rem; padding:.38rem .58rem; border:1px solid var(--ef-border); border-radius:999px; background:color-mix(in srgb,var(--ef-surface-2) 86%,transparent); color:var(--ef-text-2); font-size:.67rem; font-weight:750; }
     .ef-landing-pill i { width:6px; height:6px; border-radius:50%; background:var(--ef-accent); display:inline-block; }
     .ef-landing-pill:nth-child(2) i { background:var(--ef-accent-2); }
     .ef-landing-pill:nth-child(3) i { background:#10b981; }
     .ef-landing-pill:nth-child(4) i { background:#f59e0b; }
 
-    .ef-route-card { position:relative; z-index:1; padding:1rem; border-radius:17px; border:1px solid var(--ef-border); background:color-mix(in srgb,var(--ef-surface-2) 78%,transparent); box-shadow:inset 0 1px 0 rgba(255,255,255,.04); }
-    .ef-route-head { display:flex; justify-content:space-between; align-items:center; margin-bottom:.75rem; }
-    .ef-route-head strong { color:var(--ef-text); font-size:.72rem; letter-spacing:.1em; }
-    .ef-ready { display:inline-flex; align-items:center; gap:.35rem; padding:.22rem .48rem; border-radius:999px; color:#10b981; border:1px solid rgba(16,185,129,.22); background:rgba(16,185,129,.06); font-size:.61rem; font-weight:800; }
+    .ef-route-card { position:relative; z-index:1; padding:1rem; border-radius:17px; border:1px solid var(--ef-border); background:color-mix(in srgb,var(--ef-surface-2) 82%,transparent); box-shadow:inset 0 1px 0 rgba(255,255,255,.04),0 12px 30px rgba(15,23,42,.08); }
+    .ef-route-head { display:flex; justify-content:space-between; align-items:center; margin-bottom:.65rem; }
+    .ef-route-head strong { color:var(--ef-text); font-size:.69rem; letter-spacing:.1em; }
+    .ef-ready { display:inline-flex; align-items:center; gap:.35rem; padding:.22rem .48rem; border-radius:999px; color:#10b981; border:1px solid rgba(16,185,129,.22); background:rgba(16,185,129,.06); font-size:.59rem; font-weight:850; }
     .ef-ready::before { content:""; width:6px; height:6px; border-radius:50%; background:#10b981; box-shadow:0 0 0 4px rgba(16,185,129,.08); }
-    .ef-route-flow { display:flex; flex-direction:column; gap:.38rem; }
-    .ef-route-node { display:flex; align-items:center; gap:.55rem; padding:.52rem .62rem; border:1px solid var(--ef-border); border-radius:11px; background:var(--ef-surface); }
-    .ef-route-node b { width:23px; height:23px; display:grid; place-items:center; border-radius:8px; color:var(--ef-accent); background:color-mix(in srgb,var(--ef-accent) 10%,var(--ef-surface)); font-size:.63rem; }
-    .ef-route-node span { color:var(--ef-text-2); font-size:.68rem; font-weight:700; }
-    .ef-route-arrow { color:var(--ef-muted); font-size:.62rem; margin-left:.65rem; line-height:.55; }
+    .ef-route-flow { display:flex; flex-direction:column; gap:.28rem; }
+    .ef-route-node { display:flex; align-items:center; gap:.55rem; padding:.5rem .58rem; border:1px solid var(--ef-border); border-radius:11px; background:var(--ef-surface); }
+    .ef-route-node b { width:23px; height:23px; display:grid; place-items:center; border-radius:8px; color:var(--ef-accent); background:color-mix(in srgb,var(--ef-accent) 10%,var(--ef-surface)); font-size:.6rem; }
+    .ef-route-node span { color:var(--ef-text-2); font-size:.66rem; font-weight:740; }
+    .ef-route-arrow { color:var(--ef-muted); font-size:.58rem; margin-left:.7rem; line-height:.45; }
 
-    .ef-landing-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:.65rem; margin-top:.75rem; }
-    .ef-feature-card { padding:.82rem .9rem; border:1px solid var(--ef-border); border-radius:15px; background:var(--ef-surface); box-shadow:0 10px 28px color-mix(in srgb,#0f172a 5%,transparent); transition:transform .16s ease,border-color .16s ease,box-shadow .16s ease; }
-    .ef-feature-card:hover { transform:translateY(-2px); border-color:color-mix(in srgb,var(--ef-accent) 30%,var(--ef-border)); box-shadow:0 15px 34px color-mix(in srgb,var(--ef-accent) 8%,transparent); }
-    .ef-feature-icon { width:30px; height:30px; display:grid; place-items:center; border-radius:9px; margin-bottom:.55rem; background:color-mix(in srgb,var(--ef-accent) 10%,var(--ef-surface-2)); color:var(--ef-accent); font-size:.9rem; }
-    .ef-feature-card:nth-child(2) .ef-feature-icon { color:var(--ef-accent-2); background:color-mix(in srgb,var(--ef-accent-2) 10%,var(--ef-surface-2)); }
-    .ef-feature-card:nth-child(3) .ef-feature-icon { color:#10b981; background:rgba(16,185,129,.08); }
-    .ef-feature-card:nth-child(4) .ef-feature-icon { color:#f59e0b; background:rgba(245,158,11,.08); }
-    .ef-feature-card strong { display:block; color:var(--ef-text); font-size:.72rem; }
-    .ef-feature-card p { margin:.2rem 0 0; color:var(--ef-muted); font-size:.64rem; line-height:1.45; }
+    .ef-benchmark-strip { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:.65rem; margin-top:.7rem; }
+    .ef-benchmark-card { position:relative; padding:.78rem .9rem; border:1px solid var(--ef-border); border-radius:15px; background:var(--ef-surface); box-shadow:0 10px 28px color-mix(in srgb,#0f172a 5%,transparent); }
+    .ef-benchmark-card::before { content:""; display:block; width:28px; height:3px; border-radius:999px; margin-bottom:.55rem; background:linear-gradient(90deg,var(--ef-accent),var(--ef-accent-2)); }
+    .ef-benchmark-card strong { display:block; color:var(--ef-text); font-size:.72rem; }
+    .ef-benchmark-card p { margin:.18rem 0 0; color:var(--ef-muted); font-size:.62rem; line-height:1.4; }
 
-    .ef-snapshot { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:.65rem; margin-top:.65rem; }
-    .ef-snapshot-card { display:flex; align-items:center; justify-content:space-between; padding:.72rem .9rem; border:1px solid var(--ef-border); border-radius:14px; background:color-mix(in srgb,var(--ef-surface-2) 70%,transparent); }
-    .ef-snapshot-card span { color:var(--ef-muted); font-size:.63rem; }
-    .ef-snapshot-card strong { color:var(--ef-text); font-size:.86rem; }
+    .ef-workspace-ready { margin-top:.7rem; display:grid; grid-template-columns:1.6fr repeat(3,.8fr); gap:.65rem; padding:.72rem; border:1px solid var(--ef-border); border-radius:16px; background:color-mix(in srgb,var(--ef-surface-2) 72%,transparent); }
+    .ef-ready-copy { padding:.2rem .35rem; }
+    .ef-ready-copy strong { color:var(--ef-text); font-size:.78rem; }
+    .ef-ready-copy p { margin:.15rem 0 0; color:var(--ef-muted); font-size:.63rem; }
+    .ef-live-metric { padding:.55rem .65rem; border:1px solid var(--ef-border); border-radius:12px; background:var(--ef-surface); }
+    .ef-live-metric span { display:block; color:var(--ef-muted); font-size:.56rem; text-transform:uppercase; letter-spacing:.08em; }
+    .ef-live-metric strong { display:block; margin-top:.12rem; color:var(--ef-text); font-size:.8rem; }
 
     @media (max-width:900px) {
         .ef-landing-hero { grid-template-columns:1fr; }
-        .ef-landing-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
-        .ef-snapshot { grid-template-columns:1fr; }
+        .ef-benchmark-strip { grid-template-columns:repeat(2,minmax(0,1fr)); }
+        .ef-workspace-ready { grid-template-columns:1fr 1fr; }
+        .ef-ready-copy { grid-column:1 / -1; }
     }
     @media (max-width:560px) {
-        .ef-landing-grid { grid-template-columns:1fr; }
         .ef-landing-hero { padding:1rem; }
+        .ef-benchmark-strip { grid-template-columns:1fr; }
+        .ef-workspace-ready { grid-template-columns:1fr; }
     }
 
     /* Typing indicator (three bouncing dots), shown while a turn is in
@@ -628,7 +640,6 @@ st.markdown(_APP_CSS, unsafe_allow_html=True)
 
 # Streamlit 1.58+ can leave the native collapsed control unreachable; this
 # trusted same-origin iframe is a fallback only and hides itself when expanded.
-render_sidebar_toggle()
 
 
 def _chat_file_path(thread_id: str) -> Path:
@@ -1858,8 +1869,8 @@ with _main_col:
               <div class="ef-landing-hero">
                 <div class="ef-landing-copy">
                   <div class="ef-landing-kicker">AGENTIC RESEARCH ENGINE</div>
-                  <div class="ef-landing-title">Ask a question.<br><span>EvidenceFlow finds the path.</span></div>
-                  <div class="ef-landing-sub">A grounded research workspace that decides when to search your documents, the web, or trusted primary sources — then verifies the evidence before answering.</div>
+                  <div class="ef-landing-title">Ask anything.<br><span>Let the agent find the evidence.</span></div>
+                  <div class="ef-landing-sub">EvidenceFlow routes each question across your knowledge base, the web, and trusted primary sources, then carries evidence verification into the final answer.</div>
                   <div class="ef-landing-pills">
                     <span class="ef-landing-pill"><i></i>Agentic routing</span>
                     <span class="ef-landing-pill"><i></i>Hybrid retrieval</span>
@@ -1868,7 +1879,7 @@ with _main_col:
                   </div>
                 </div>
                 <div class="ef-route-card">
-                  <div class="ef-route-head"><strong>AGENT ROUTING</strong><span class="ef-ready">{html_lib.escape(_status_label.upper())}</span></div>
+                  <div class="ef-route-head"><strong>HOW EVIDENCEFLOW WORKS</strong><span class="ef-ready">{html_lib.escape(_status_label.upper())}</span></div>
                   <div class="ef-route-flow">
                     <div class="ef-route-node"><b>01</b><span>Understand the question</span></div>
                     <div class="ef-route-arrow">↓</div>
@@ -1880,16 +1891,17 @@ with _main_col:
                   </div>
                 </div>
               </div>
-              <div class="ef-landing-grid">
-                <div class="ef-feature-card"><div class="ef-feature-icon">⌁</div><strong>Adaptive retrieval</strong><p>KB, web and primary sources are selected per question.</p></div>
-                <div class="ef-feature-card"><div class="ef-feature-icon">↗</div><strong>Parallel evidence</strong><p>Relevant passages can be analyzed concurrently for faster grounding.</p></div>
-                <div class="ef-feature-card"><div class="ef-feature-icon">✓</div><strong>Verified answers</strong><p>Citations and evidence checks stay attached to the final response.</p></div>
-                <div class="ef-feature-card"><div class="ef-feature-icon">◷</div><strong>Research memory</strong><p>Threads persist so a long investigation can continue later.</p></div>
+              <div class="ef-benchmark-strip">
+                <div class="ef-benchmark-card"><strong>Adaptive retrieval</strong><p>Tools are chosen per question instead of by a manual mode.</p></div>
+                <div class="ef-benchmark-card"><strong>Parallel evidence</strong><p>Relevant passages can be analyzed concurrently for grounding.</p></div>
+                <div class="ef-benchmark-card"><strong>Verified answers</strong><p>Citations and evidence checks stay attached to the response.</p></div>
+                <div class="ef-benchmark-card"><strong>Research memory</strong><p>Persistent threads let investigations continue across sessions.</p></div>
               </div>
-              <div class="ef-snapshot">
-                <div class="ef-snapshot-card"><span>Knowledge sources</span><strong>{_doc_count}</strong></div>
-                <div class="ef-snapshot-card"><span>Research threads</span><strong>{_thread_count}</strong></div>
-                <div class="ef-snapshot-card"><span>Backend status</span><strong>{html_lib.escape(_status_label)}</strong></div>
+              <div class="ef-workspace-ready">
+                <div class="ef-ready-copy"><strong>Research workspace ready</strong><p>Upload a document, or start with a question. The agent decides what to use.</p></div>
+                <div class="ef-live-metric"><span>Knowledge sources</span><strong>{_doc_count}</strong></div>
+                <div class="ef-live-metric"><span>Research threads</span><strong>{_thread_count}</strong></div>
+                <div class="ef-live-metric"><span>Backend</span><strong>{html_lib.escape(_BACKEND)}</strong></div>
               </div>
             </section>
             """,
