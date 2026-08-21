@@ -103,8 +103,17 @@ body {{ overflow-x:hidden!important; }}
 header [data-testid="stHeaderActionElements"] {{display:none!important;}}
 header[data-testid="stHeader"] {{background:transparent!important;}}
 
-/* Native sidebar toggle — current + legacy Streamlit selectors. */
+/* Native sidebar toggle — current + legacy Streamlit selectors.
+   Streamlit 1.61 renders two distinct controls that must both stay usable:
+   - stSidebarCollapseButton: the chevron inside the open sidebar that closes it.
+   - stSidebarCollapsedControl: the floating control that appears outside the
+     sidebar, near the top-left of the main content, to reopen it once
+     collapsed. This is the actual reopen affordance the user clicks — it was
+     previously missing from this rule, so nothing here forced it visible and
+     it could be left invisible/unclickable after collapsing.
+   collapsedControl is kept as a legacy fallback for older Streamlit builds. */
 [data-testid="stSidebarCollapseButton"],
+[data-testid="stSidebarCollapsedControl"],
 [data-testid="collapsedControl"] {{
   display:flex!important;
   visibility:visible!important;
@@ -114,6 +123,7 @@ header[data-testid="stHeader"] {{background:transparent!important;}}
   z-index:10000!important;
 }}
 [data-testid="stSidebarCollapseButton"] button,
+[data-testid="stSidebarCollapsedControl"] button,
 [data-testid="collapsedControl"] button {{
   pointer-events:auto!important;
   visibility:visible!important;
