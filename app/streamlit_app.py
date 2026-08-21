@@ -93,6 +93,8 @@ from pathlib import Path
 
 import streamlit as st
 
+from sidebar_toggle import render_sidebar_toggle  # noqa: E402
+
 LOGGER = logging.getLogger(__name__)
 
 # This file lives in app/ — _POC_ROOT is one level up (poc/langgraph_rag/),
@@ -165,6 +167,7 @@ st.set_page_config(
     page_title="Document Research Assistant",
     page_icon=str(_ROBOT_ICON_PATH) if _ROBOT_ICON_PATH.exists() else "🤖",
     layout="wide",
+    initial_sidebar_state="expanded",
 )
 
 # Shared visual layer. The browser/system appearance drives the visual CSS live;
@@ -297,42 +300,39 @@ _APP_CSS = """
         transition: margin-left 0.25s ease, width 0.25s ease;
     }
 
-    /* Sidebar reopen fix: keep Streamlit's OWN collapsed control visible and
-       clickable. We do not inject a second HTML/JS button because Streamlit
-       sanitizes event-bearing HTML in some deployments, which can surface the
-       raw markup in the page. Support current and legacy test IDs. */
+    /* Streamlit owns the sidebar state. Do not hide/relocate its native
+       collapse control; the trusted iframe fallback below only appears when
+       Streamlit has actually collapsed the sidebar. */
+    [data-testid="stSidebarCollapseButton"],
     [data-testid="stSidebarCollapsedControl"],
     [data-testid="collapsedControl"] {
-        display: flex !important;
-        visibility: visible !important;
-        opacity: 1 !important;
-        pointer-events: auto !important;
-        position: fixed !important;
-        top: 12px !important;
-        left: 12px !important;
         z-index: 100000 !important;
     }
+    [data-testid="stSidebarCollapseButton"] button,
     [data-testid="stSidebarCollapsedControl"] button,
-    [data-testid="collapsedControl"] button,
-    [data-testid="stSidebarCollapseButton"] button {
-        visibility: visible !important;
-        opacity: 1 !important;
-        pointer-events: auto !important;
-        min-width: 40px !important;
-        min-height: 40px !important;
-        border: 1px solid var(--ef-border-strong) !important;
-        border-radius: 12px !important;
-        background: color-mix(in srgb, var(--ef-surface) 94%, transparent) !important;
+    [data-testid="collapsedControl"] button {
         color: var(--ef-text) !important;
-        box-shadow: 0 10px 28px color-mix(in srgb,#0f172a 12%,transparent) !important;
-        backdrop-filter: blur(14px);
     }
-    [data-testid="stSidebarCollapsedControl"] button:hover,
-    [data-testid="collapsedControl"] button:hover,
-    [data-testid="stSidebarCollapseButton"] button:hover {
-        transform: translateY(-1px);
-        border-color: color-mix(in srgb,var(--ef-accent) 48%,var(--ef-border)) !important;
-        box-shadow: 0 14px 34px color-mix(in srgb,var(--ef-accent) 12%,transparent) !important;
+
+    /* Reliable fallback affordance for Streamlit versions where the native
+       collapsed control is visibility-hidden. */
+    [data-testid="stIFrame"] {
+        position: fixed !important;
+        top: 76px !important;
+        left: 14px !important;
+        width: 48px !important;
+        height: 48px !important;
+        z-index: 100001 !important;
+        border: 0 !important;
+        background: transparent !important;
+        pointer-events: none !important;
+    }
+    [data-testid="stIFrame"] iframe {
+        width: 48px !important;
+        height: 48px !important;
+        border: 0 !important;
+        background: transparent !important;
+        pointer-events: auto !important;
     }
 
     /* ChatGPT-like active conversation: the hero becomes a compact context
@@ -363,7 +363,6 @@ _APP_CSS = """
     @media (max-width: 720px) {
         .ef-chat-topbar span { display:none; }
         .ef-chat-topbar { margin-bottom:.55rem; }
-        .ef-sidebar-toggle { top:8px; left:8px; width:38px; height:38px; }
     }
 
     .ef-sidebar-brand {
@@ -408,45 +407,74 @@ _APP_CSS = """
     }
     .doc-chip svg { flex-shrink: 0; opacity: 0.7; }
 
-    /* Empty-state hero card */
-    .empty-state {
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        text-align: center;
-        gap: 0.55rem;
-        padding: 1.35rem 1rem;
-        margin: 0.75rem 0 1rem 0;
-        border-radius: 20px;
-        background: linear-gradient(180deg, color-mix(in srgb, var(--card-bg) 97%, var(--accent-1) 3%), var(--card-bg));
-        border: 1px dashed var(--card-border);
-        box-shadow: 0 14px 36px rgba(15,23,42,.06);
-        animation: fade-in-up 0.5s ease both;
+    /* Landing experience — intentionally dense enough to feel like a product,
+       while disappearing completely once the first conversation starts. */
+    .ef-landing {
+        margin: .35rem 0 1.1rem;
+        animation: fade-in-up .5s ease both;
     }
-    .empty-state svg { animation: pulse-soft 4s ease-in-out infinite; color: var(--accent-1); }
-    .empty-kicker {
-        font-size: .68rem;
-        font-weight: 800;
-        letter-spacing: .14em;
-        color: var(--accent-1);
+    .ef-landing-hero {
+        display:grid; grid-template-columns:minmax(0,1.15fr) minmax(360px,.85fr);
+        gap:1rem; padding:1.45rem; border-radius:22px;
+        border:1px solid var(--ef-border-strong);
+        background:
+          radial-gradient(520px 260px at 100% 0%, color-mix(in srgb,var(--ef-accent-2) 16%,transparent),transparent 62%),
+          linear-gradient(135deg,color-mix(in srgb,var(--ef-accent) 10%,var(--ef-surface)),var(--ef-surface));
+        box-shadow:0 20px 55px color-mix(in srgb,#0f172a 10%,transparent);
+        overflow:hidden; position:relative;
     }
-    .empty-icon-wrap {
-        display: grid; place-items: center;
-        width: 56px; height: 56px; border-radius: 16px;
-        background: color-mix(in srgb, var(--accent-1) 9%, var(--card-bg));
-        border: 1px solid color-mix(in srgb, var(--accent-1) 22%, var(--card-border));
+    .ef-landing-hero::after {
+        content:""; position:absolute; width:190px; height:190px; border-radius:50%;
+        right:-85px; top:-95px; border:1px solid color-mix(in srgb,var(--ef-accent) 20%,transparent);
+        box-shadow:0 0 0 22px color-mix(in srgb,var(--ef-accent) 3%,transparent), 0 0 0 44px color-mix(in srgb,var(--ef-accent) 2%,transparent);
+        pointer-events:none;
     }
-    .empty-actions-hint { color: var(--fg-muted); font-size: .76rem; margin-top: .1rem; }
-    .empty-actions-hint span { margin: 0 .35rem; color: var(--accent-1); }
-    .empty-state .empty-title {
-        font-weight: 700;
-        font-size: 1.05rem;
-        color: var(--fg-primary);
+    .ef-landing-copy { position:relative; z-index:1; padding:.35rem .2rem; }
+    .ef-landing-kicker { color:var(--ef-accent); font-size:.67rem; font-weight:850; letter-spacing:.17em; }
+    .ef-landing-title { margin:.55rem 0 .55rem; color:var(--ef-text); font-size:clamp(1.65rem,3vw,2.35rem); line-height:1.08; font-weight:850; letter-spacing:-.035em; }
+    .ef-landing-title span { background:linear-gradient(90deg,var(--ef-accent),var(--ef-accent-2)); -webkit-background-clip:text; background-clip:text; color:transparent; }
+    .ef-landing-sub { max-width:650px; color:var(--ef-muted); font-size:.88rem; line-height:1.65; }
+    .ef-landing-pills { display:flex; flex-wrap:wrap; gap:.45rem; margin-top:.9rem; }
+    .ef-landing-pill { display:inline-flex; align-items:center; gap:.35rem; padding:.38rem .58rem; border:1px solid var(--ef-border); border-radius:999px; background:color-mix(in srgb,var(--ef-surface-2) 85%,transparent); color:var(--ef-text-2); font-size:.68rem; font-weight:700; }
+    .ef-landing-pill i { width:6px; height:6px; border-radius:50%; background:var(--ef-accent); display:inline-block; }
+    .ef-landing-pill:nth-child(2) i { background:var(--ef-accent-2); }
+    .ef-landing-pill:nth-child(3) i { background:#10b981; }
+    .ef-landing-pill:nth-child(4) i { background:#f59e0b; }
+
+    .ef-route-card { position:relative; z-index:1; padding:1rem; border-radius:17px; border:1px solid var(--ef-border); background:color-mix(in srgb,var(--ef-surface-2) 78%,transparent); box-shadow:inset 0 1px 0 rgba(255,255,255,.04); }
+    .ef-route-head { display:flex; justify-content:space-between; align-items:center; margin-bottom:.75rem; }
+    .ef-route-head strong { color:var(--ef-text); font-size:.72rem; letter-spacing:.1em; }
+    .ef-ready { display:inline-flex; align-items:center; gap:.35rem; padding:.22rem .48rem; border-radius:999px; color:#10b981; border:1px solid rgba(16,185,129,.22); background:rgba(16,185,129,.06); font-size:.61rem; font-weight:800; }
+    .ef-ready::before { content:""; width:6px; height:6px; border-radius:50%; background:#10b981; box-shadow:0 0 0 4px rgba(16,185,129,.08); }
+    .ef-route-flow { display:flex; flex-direction:column; gap:.38rem; }
+    .ef-route-node { display:flex; align-items:center; gap:.55rem; padding:.52rem .62rem; border:1px solid var(--ef-border); border-radius:11px; background:var(--ef-surface); }
+    .ef-route-node b { width:23px; height:23px; display:grid; place-items:center; border-radius:8px; color:var(--ef-accent); background:color-mix(in srgb,var(--ef-accent) 10%,var(--ef-surface)); font-size:.63rem; }
+    .ef-route-node span { color:var(--ef-text-2); font-size:.68rem; font-weight:700; }
+    .ef-route-arrow { color:var(--ef-muted); font-size:.62rem; margin-left:.65rem; line-height:.55; }
+
+    .ef-landing-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:.65rem; margin-top:.75rem; }
+    .ef-feature-card { padding:.82rem .9rem; border:1px solid var(--ef-border); border-radius:15px; background:var(--ef-surface); box-shadow:0 10px 28px color-mix(in srgb,#0f172a 5%,transparent); transition:transform .16s ease,border-color .16s ease,box-shadow .16s ease; }
+    .ef-feature-card:hover { transform:translateY(-2px); border-color:color-mix(in srgb,var(--ef-accent) 30%,var(--ef-border)); box-shadow:0 15px 34px color-mix(in srgb,var(--ef-accent) 8%,transparent); }
+    .ef-feature-icon { width:30px; height:30px; display:grid; place-items:center; border-radius:9px; margin-bottom:.55rem; background:color-mix(in srgb,var(--ef-accent) 10%,var(--ef-surface-2)); color:var(--ef-accent); font-size:.9rem; }
+    .ef-feature-card:nth-child(2) .ef-feature-icon { color:var(--ef-accent-2); background:color-mix(in srgb,var(--ef-accent-2) 10%,var(--ef-surface-2)); }
+    .ef-feature-card:nth-child(3) .ef-feature-icon { color:#10b981; background:rgba(16,185,129,.08); }
+    .ef-feature-card:nth-child(4) .ef-feature-icon { color:#f59e0b; background:rgba(245,158,11,.08); }
+    .ef-feature-card strong { display:block; color:var(--ef-text); font-size:.72rem; }
+    .ef-feature-card p { margin:.2rem 0 0; color:var(--ef-muted); font-size:.64rem; line-height:1.45; }
+
+    .ef-snapshot { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:.65rem; margin-top:.65rem; }
+    .ef-snapshot-card { display:flex; align-items:center; justify-content:space-between; padding:.72rem .9rem; border:1px solid var(--ef-border); border-radius:14px; background:color-mix(in srgb,var(--ef-surface-2) 70%,transparent); }
+    .ef-snapshot-card span { color:var(--ef-muted); font-size:.63rem; }
+    .ef-snapshot-card strong { color:var(--ef-text); font-size:.86rem; }
+
+    @media (max-width:900px) {
+        .ef-landing-hero { grid-template-columns:1fr; }
+        .ef-landing-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
+        .ef-snapshot { grid-template-columns:1fr; }
     }
-    .empty-state .empty-sub {
-        color: var(--fg-muted);
-        font-size: 0.88rem;
-        max-width: 30rem;
+    @media (max-width:560px) {
+        .ef-landing-grid { grid-template-columns:1fr; }
+        .ef-landing-hero { padding:1rem; }
     }
 
     /* Typing indicator (three bouncing dots), shown while a turn is in
@@ -597,6 +625,10 @@ _APP_CSS = """
     </style>
     """
 st.markdown(_APP_CSS, unsafe_allow_html=True)
+
+# Streamlit 1.58+ can leave the native collapsed control unreachable; this
+# trusted same-origin iframe is a fallback only and hides itself when expanded.
+render_sidebar_toggle()
 
 
 def _chat_file_path(thread_id: str) -> Path:
@@ -1805,8 +1837,8 @@ else:
 with _main_col:
     if _has_messages:
         st.markdown(
-            '<div class="ef-chat-topbar"><div><strong>EvidenceFlow</strong><span>Agentic research workspace</span></div>'
-            '<div class="ef-agent-badge"><span></span>Agent decides</div></div>',
+            '<div class="ef-chat-topbar"><div><strong>EvidenceFlow</strong><span>Verified research workspace</span></div>'
+            '<div class="ef-agent-badge"><span></span>Agent decides the route</div></div>',
             unsafe_allow_html=True,
         )
     if _latest:
@@ -1815,16 +1847,51 @@ with _main_col:
             if st.button("Open evidence workspace", icon="🔎", key="open-evidence-main"):
                 st.session_state.evidence_open=True; st.rerun()
 
-    if not st.session_state.uploaded_docs and not st.session_state.chat_uploaded_docs and not _has_messages:
+    if not _has_messages:
+        _doc_count = len(st.session_state.uploaded_docs) + len(st.session_state.chat_uploaded_docs)
+        _thread_count = len(st.session_state.chat_store.get("threads", []))
+        _status_ok = st.session_state.get("status_check", {}).get("qdrant_ok", True)
+        _status_label = "Ready" if _status_ok else "Check backend"
         st.markdown(
             f"""
-            <div class="empty-state">
-                <div class="empty-kicker">AGENTIC RESEARCH WORKSPACE</div>
-                <div class="empty-icon-wrap">{_icon("mood-empty", size=40)}</div>
-                <div class="empty-title">Ask anything. The agent chooses the path.</div>
-                <div class="empty-sub">Upload documents for grounded answers, attach a file to the next question, or ask a current question. EvidenceFlow decides whether to use your knowledge base, web research, trusted primary sources, or a combination.</div>
-                <div class="empty-actions-hint"><span>Agentic routing</span><span>•</span><span>Hybrid retrieval</span><span>•</span><span>Evidence verification</span><span>•</span><span>Persistent threads</span></div>
-            </div>
+            <section class="ef-landing">
+              <div class="ef-landing-hero">
+                <div class="ef-landing-copy">
+                  <div class="ef-landing-kicker">AGENTIC RESEARCH ENGINE</div>
+                  <div class="ef-landing-title">Ask a question.<br><span>EvidenceFlow finds the path.</span></div>
+                  <div class="ef-landing-sub">A grounded research workspace that decides when to search your documents, the web, or trusted primary sources — then verifies the evidence before answering.</div>
+                  <div class="ef-landing-pills">
+                    <span class="ef-landing-pill"><i></i>Agentic routing</span>
+                    <span class="ef-landing-pill"><i></i>Hybrid retrieval</span>
+                    <span class="ef-landing-pill"><i></i>Evidence verification</span>
+                    <span class="ef-landing-pill"><i></i>Persistent threads</span>
+                  </div>
+                </div>
+                <div class="ef-route-card">
+                  <div class="ef-route-head"><strong>AGENT ROUTING</strong><span class="ef-ready">{html_lib.escape(_status_label.upper())}</span></div>
+                  <div class="ef-route-flow">
+                    <div class="ef-route-node"><b>01</b><span>Understand the question</span></div>
+                    <div class="ef-route-arrow">↓</div>
+                    <div class="ef-route-node"><b>02</b><span>Select the best evidence path</span></div>
+                    <div class="ef-route-arrow">↓</div>
+                    <div class="ef-route-node"><b>03</b><span>Retrieve + verify evidence</span></div>
+                    <div class="ef-route-arrow">↓</div>
+                    <div class="ef-route-node"><b>04</b><span>Synthesize a grounded answer</span></div>
+                  </div>
+                </div>
+              </div>
+              <div class="ef-landing-grid">
+                <div class="ef-feature-card"><div class="ef-feature-icon">⌁</div><strong>Adaptive retrieval</strong><p>KB, web and primary sources are selected per question.</p></div>
+                <div class="ef-feature-card"><div class="ef-feature-icon">↗</div><strong>Parallel evidence</strong><p>Relevant passages can be analyzed concurrently for faster grounding.</p></div>
+                <div class="ef-feature-card"><div class="ef-feature-icon">✓</div><strong>Verified answers</strong><p>Citations and evidence checks stay attached to the final response.</p></div>
+                <div class="ef-feature-card"><div class="ef-feature-icon">◷</div><strong>Research memory</strong><p>Threads persist so a long investigation can continue later.</p></div>
+              </div>
+              <div class="ef-snapshot">
+                <div class="ef-snapshot-card"><span>Knowledge sources</span><strong>{_doc_count}</strong></div>
+                <div class="ef-snapshot-card"><span>Research threads</span><strong>{_thread_count}</strong></div>
+                <div class="ef-snapshot-card"><span>Backend status</span><strong>{html_lib.escape(_status_label)}</strong></div>
+              </div>
+            </section>
             """,
             unsafe_allow_html=True,
         )
