@@ -107,6 +107,7 @@ _POC_ROOT = _HERE.parent
 if str(_POC_ROOT) not in sys.path:
     sys.path.insert(0, str(_POC_ROOT))
 
+from sidebar_toggle import render_sidebar_toggle  # noqa: E402
 from agents.custom_langgraph_poc import astream_langgraph_turn, build_langgraph_agent  # noqa: E402
 from citations.verifier import verify_reference  # noqa: E402
 from retrieval.rag_pipeline import (  # noqa: E402
@@ -182,6 +183,8 @@ apply_theme(
     accent2="#2563EB",
     theme=_theme_mode,
 )
+
+render_sidebar_toggle()
 
 # Portfolio handoff: accept the temporary gateway JWT from the portfolio launch URL.
 portfolio_token = str(st.query_params.get("portfolio_llm_session", "")).strip()
@@ -294,55 +297,57 @@ _APP_CSS = """
         box-shadow: 0 4px 12px rgba(99, 102, 241, 0.25);
     }
 
-    /* Sidebar: smoother native collapse/expand transition */
+    /* Sidebar: preserve Streamlit's native state and repair the collapsed
+       affordance using the same proven pointer-events/z-index strategy used
+       by the stable AI Automation Command Center UI. */
     [data-testid="stSidebar"] {
         transition: margin-left 0.25s ease, width 0.25s ease;
     }
-
-    /* Streamlit owns the sidebar state. Do not hide/relocate its native
-       collapse control; the trusted iframe fallback below only appears when
-       Streamlit has actually collapsed the sidebar. */
     [data-testid="stSidebarCollapseButton"],
+    [data-testid="stSidebarCollapseButton"] button,
+    [data-testid="stSidebarCollapsedControl"],
+    [data-testid="stSidebarCollapsedControl"] button,
+    [data-testid="collapsedControl"],
+    [data-testid="collapsedControl"] button {
+        z-index: 100001 !important;
+        pointer-events: auto !important;
+    }
     [data-testid="stSidebarCollapsedControl"],
     [data-testid="collapsedControl"] {
-        z-index: 100000 !important;
-    }
-    [data-testid="stSidebarCollapseButton"] button,
-    [data-testid="stSidebarCollapsedControl"] button,
-    [data-testid="collapsedControl"] button {
-        color: var(--ef-text) !important;
-    }
-
-    /* Native sidebar affordance — do not replace Streamlit's control with
-       injected HTML/JS. When collapsed, keep Streamlit's own control visible,
-       clickable, and above the app canvas. */
-    [data-testid="stSidebarCollapseButton"],
-    [data-testid="stSidebarCollapsedControl"],
-    [data-testid="collapsedControl"] {
-        z-index: 100000 !important;
-    }
-    [data-testid="stSidebarCollapseButton"] button,
-    [data-testid="stSidebarCollapsedControl"] button,
-    [data-testid="collapsedControl"] button {
+        position: fixed !important;
+        top: 0.62rem !important;
+        left: 0.62rem !important;
+        display: flex !important;
         visibility: visible !important;
         opacity: 1 !important;
-        display: flex !important;
-        pointer-events: auto !important;
-        color: var(--ef-text) !important;
-        background: color-mix(in srgb, var(--ef-surface) 92%, transparent) !important;
-        border: 1px solid var(--ef-border-strong) !important;
-        border-radius: 12px !important;
-        box-shadow: 0 10px 30px color-mix(in srgb,#0f172a 16%,transparent) !important;
         width: 42px !important;
         height: 42px !important;
         align-items: center !important;
         justify-content: center !important;
     }
-    [data-testid="stSidebarCollapsedControl"],
-    [data-testid="collapsedControl"] {
-        position: fixed !important;
-        top: 76px !important;
-        left: 14px !important;
+    [data-testid="stSidebarCollapsedControl"] button,
+    [data-testid="collapsedControl"] button {
+        width: 40px !important;
+        height: 40px !important;
+        border-radius: 12px !important;
+        background: color-mix(in srgb, var(--ef-surface) 92%, transparent) !important;
+        border: 1px solid var(--ef-border) !important;
+        box-shadow: 0 8px 24px rgba(0,0,0,.16) !important;
+        color: var(--ef-text) !important;
+        display: flex !important;
+        visibility: visible !important;
+        opacity: 1 !important;
+        pointer-events: auto !important;
+        align-items: center !important;
+        justify-content: center !important;
+    }
+    [data-testid="stSidebarCollapsedControl"] svg,
+    [data-testid="collapsedControl"] svg {
+        width: 20px !important;
+        height: 20px !important;
+    }
+    [data-testid="stSidebarCollapseButton"] {
+        margin-left: 0.2rem !important;
     }
 
 
