@@ -1206,6 +1206,8 @@ def _meta_from_outcome(outcome: dict) -> dict:
         "grounding_status": outcome.get("grounding_status"),
         "reasons": outcome.get("reasons", {}),
         "quality": outcome.get("quality", {}),
+        "guardrail_findings": outcome.get("guardrail_findings", []),
+        "trust": outcome.get("trust", {}),
         "abstained": outcome.get("abstained", False),
         "abstention_reason": outcome.get("abstention_reason"),
         "used_web": outcome.get("used_web", False),
@@ -1386,8 +1388,10 @@ def _render_answer_summary(meta: dict, *, idx: int, is_latest: bool) -> None:
     confidence = quality.get("confidence")
     confidence_text = str(confidence).strip().title() if confidence not in (None, "", "n/a", "N/A") else None
     conflicts = quality.get("evidence_conflicts") or []
+    trust = meta.get("trust") or {}
+    guardrail_findings = meta.get("guardrail_findings") or []
 
-    if meta.get("abstained") or grounding.lower() in {"abstained", "blocked", "failed"}:
+    if meta.get("abstained") or grounding.lower() in {"abstained", "blocked", "failed"} or trust.get("label") in {"BLOCKED", "REVIEW", "UNVERIFIED"}:
         dot_class = "warn"
         quality_text = "Needs review"
         quality_class = "warn"
@@ -1417,6 +1421,10 @@ def _render_answer_summary(meta: dict, *, idx: int, is_latest: bool) -> None:
     if conflicts:
         suffix = "" if len(conflicts) == 1 else "s"
         metrics.append(f'<span class="ef-answer-metric"><strong>{len(conflicts)}</strong> conflict{suffix}</span>')
+    if trust.get("security_blocked"):
+        metrics.append('<span class="ef-answer-metric"><strong>blocked</strong> safety check</span>')
+    elif guardrail_findings:
+        metrics.append(f'<span class="ef-answer-metric"><strong>{len(guardrail_findings)}</strong> safety finding{"s" if len(guardrail_findings) != 1 else ""}</span>')
 
     st.markdown(
         f'''<div class="ef-answer-summary">
@@ -1437,6 +1445,13 @@ def _render_answer_summary(meta: dict, *, idx: int, is_latest: bool) -> None:
             f'<div class="ef-evidence-mini"><strong>Potential evidence conflict</strong> · {len(conflicts)} cited claim{suffix} need source-level review.</div>',
             unsafe_allow_html=True,
         )
+
+    if guardrail_findings:
+        blocked = any(f.get("blocked") for f in guardrail_findings if isinstance(f, dict))
+        if blocked:
+            st.warning("A safety guardrail blocked this response before it could be returned.", icon="🛡️")
+        else:
+            st.info("Some retrieved content was flagged as untrusted and treated as evidence only — its instructions were not executed.", icon="🛡️")
 
     if is_latest and (kb_count or web_count or primary_used):
         if st.button(
