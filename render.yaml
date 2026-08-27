@@ -13,19 +13,47 @@ services:
         sync: false
       - key: OPENSEARCH_PASSWORD
         sync: false
+      - key: OPENSEARCH_INDEX
+        value: evidenceflow_documents
+      - key: OPENSEARCH_VERIFY_CERTS
+        value: "true"
+      - key: OPENSEARCH_NEURAL_SPARSE
+        value: "false"
       - key: JINA_API_KEY
         sync: false
+      - key: RERANK_ENABLED
+        value: "true"
+      - key: RERANK_CANDIDATE_K
+        value: "30"
       - key: RERANK_BACKEND
         value: jina
       - key: JINA_API_URL
         value: https://api.jina.ai/v1/rerank
       - key: JINA_RERANK_MODEL
         value: jina-reranker-v1-turbo-en
-      - key: LLM_GATEWAY_URL
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: BACKEND
+        value: openrouter
+      - key: TENANT_SCHEMA
+        value: portfolio_demo
+      - key: PLATFORM_TENANT_ID
+        value: agentic_rag
+      - key: TOP_K
+        value: "5"
+      - key: MAX_CONCURRENT_SUBAGENTS
+        value: "3"
+      - key: MAX_RESEARCHER_ITERATIONS
+        value: "3"
+      - key: CHUNK_SIZE
+        value: "1000"
+      - key: CHUNK_OVERLAP
+        value: "150"
+      - key: CSV_OVERLAP_ROWS
+        value: "1"
+      - key: TAVILY_API_KEY
         sync: false
       - key: KATZILLA_ENABLED
         value: "true"
       - key: KATZILLA_API_KEY
-        sync: false
-      - key: TAVILY_API_KEY
         sync: false

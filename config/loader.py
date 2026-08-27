@@ -23,10 +23,10 @@ def _env(key: str, default: str) -> str:
     values = dotenv_values(_POC_DIR / ".env")
     legacy_key = f"POC_{key}" if not key.startswith("POC_") else key
     return (
-        values.get(key)
-        or os.environ.get(key)
-        or values.get(legacy_key)
+        os.environ.get(key)
         or os.environ.get(legacy_key)
+        or values.get(key)
+        or values.get(legacy_key)
         or default
     )
 
