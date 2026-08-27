@@ -1,5 +1,5 @@
 """Shared constants used across the retrieval/citation/ingestion pipeline:
-Qdrant payload metadata keys, the rerank model id, and the error-code/
+retrieval metadata keys, the rerank model id, and the error-code/
 message strings `shared/exceptions.py` and `shared/text_extractors.py`
 raise. Kept to exactly the fields this codebase actually reads — no
 unused classes carried along "just in case"."""
@@ -8,16 +8,16 @@ import os
 
 
 class AIConstants:
-    RERANK_MODEL: str = os.getenv("RERANK_MODEL", "jinaai/jina-reranker-v1-turbo-en")
+    RERANK_MODEL: str = os.getenv("RERANK_MODEL", "jina-reranker-v1-turbo-en")
     COLLECTION_SUFFIX: str = "embeddings"
 
 
-class VectorDBConstants:
-    META_DOCUMENT_ID_KEY = "meta_data.document_id"
-    META_THREAD_ID_KEY = "meta_data.thread_id"
-    META_TENANT_SCHEMA_KEY = "meta_data.tenant_schema"
-    META_PERSON_IDS_KEY = "meta_data.person_ids"
-    META_ORG_IDS_KEY = "meta_data.org_ids"
+class RetrievalConstants:
+    META_DOCUMENT_ID_KEY = "document_id"
+    META_THREAD_ID_KEY = "thread_id"
+    META_TENANT_SCHEMA_KEY = "tenant_schema"
+    META_PERSON_IDS_KEY = "person_ids"
+    META_ORG_IDS_KEY = "org_ids"
 
 
 class AIReferenceKeys:

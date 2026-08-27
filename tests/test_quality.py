@@ -18,3 +18,22 @@ def test_detects_possible_numeric_evidence_conflict():
     conflicts = evidence_conflict_candidates(answer, refs)
     assert conflicts
     assert set(conflicts[0]["evidence_ids"]) == {"E1", "E2"}
+
+
+def test_does_not_flag_unrelated_numbers_in_same_document():
+    answer = "The role requires 1-2+ years of experience."
+    refs = [
+        {"evidence_id": "E1", "content": "The role requires 1-2+ years of experience building automation systems."},
+        {"evidence_id": "E2", "content": "The team will build four core automation agents."},
+    ]
+    assert evidence_conflict_candidates(answer, refs) == []
+
+
+def test_does_not_flag_identical_duplicate_passages():
+    answer = "The role requires 1-2+ years of experience."
+    content = "The role requires 1-2+ years of experience building automation systems."
+    refs = [
+        {"evidence_id": "E1", "content": content},
+        {"evidence_id": "E2", "content": content},
+    ]
+    assert evidence_conflict_candidates(answer, refs) == []

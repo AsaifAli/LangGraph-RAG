@@ -7,22 +7,20 @@ services:
     plan: free
     healthCheckPath: /_stcore/health
     envVars:
-      - key: RETRIEVAL_BACKEND
-        value: qdrant-cloud
-      - key: RERANK_BACKEND
-        value: jina
-      - key: HOSTED_DENSE_MODEL
-        value: sentence-transformers/all-MiniLM-L6-v2
-      - key: HOSTED_SPARSE_MODEL
-        value: Qdrant/bm25
-      - key: HOSTED_DENSE_VECTOR_SIZE
-        value: "384"
-      - key: QDRANT_URL
+      - key: OPENSEARCH_URL
         sync: false
-      - key: QDRANT_API_KEY
+      - key: OPENSEARCH_USERNAME
+        sync: false
+      - key: OPENSEARCH_PASSWORD
         sync: false
       - key: JINA_API_KEY
         sync: false
+      - key: RERANK_BACKEND
+        value: jina
+      - key: JINA_API_URL
+        value: https://api.jina.ai/v1/rerank
+      - key: JINA_RERANK_MODEL
+        value: jina-reranker-v1-turbo-en
       - key: LLM_GATEWAY_URL
         sync: false
       - key: KATZILLA_ENABLED

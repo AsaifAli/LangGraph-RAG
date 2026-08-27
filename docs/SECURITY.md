@@ -8,7 +8,7 @@ enterprise IAM product.
 - Secrets are loaded from environment variables and `.env` is never shipped in
 the repository or Docker build context.
 - Knowledge-base retrieval always includes tenant and document conditions.
-- An empty document scope produces an empty Qdrant `MatchAny` condition rather
+- An empty document scope produces an empty OpenSearch `MatchAny` condition rather
 than an unrestricted query.
 - Citation verification is fail-closed in `verified` mode.
 - Document IDs are treated as scope identifiers, not as proof of authorization.
@@ -21,7 +21,7 @@ issue only ACL-approved document IDs to it:
 
 ```text
 Identity provider -> API auth -> tenant/ACL service -> authorized document IDs
-                                                -> LangGraph -> Qdrant
+                                                -> LangGraph -> OpenSearch
 ```
 
 Do not treat a client-supplied `tenant_id` or `document_id` as an authorization

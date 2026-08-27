@@ -24,10 +24,10 @@ The core agentic RAG architecture remains intact while the product now adds a fo
 ## Core retrieval stack
 
 - LangGraph agentic routing
-- Knowledge-base / web / hybrid routing
+- Knowledge-base / web / primary-source routing
 - Dense + sparse retrieval
 - Reciprocal Rank Fusion
-- Qdrant vector search
+- OpenSearch sparse-first search
 - BM25 sparse retrieval
 - Cross-encoder reranking
 - Persistent conversation state

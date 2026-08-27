@@ -1,82 +1,44 @@
-# Dependencies for this app's LangGraph RAG pipeline + Streamlit chat UI.
-# Installed into a dedicated venv at poc/langgraph_rag/.venv.
-#
-# Built entirely on LangChain-native primitives (langchain-qdrant,
-# langchain-huggingface, fastembed) rather than a heavier agent framework's
-# vector-db/rerank wrapper classes — no `agno` (or any other agent
-# framework) dependency at all for retrieval/rerank.
-#
-# Reranking uses a local cross-encoder — `jinaai/jina-reranker-v1-turbo-en`
-# via `fastembed` — entirely in-process, ONNX, no API key required.
+# EvidenceFlow dependencies: LangGraph + OpenSearch sparse-first retrieval
+# and a local cross-encoder reranker. No dense vector database is required.
 
-# --- core LangGraph runtime ---
 langgraph==1.2.9
-# The primary application uses custom LangGraph orchestration. Optional
-# deepagents comparison/reference scripts are isolated in
-# requirements-experiments.txt.
-# Disk-backed checkpointer (streamlit_app.py's AsyncSqliteSaver) so
-# conversation memory survives a server restart, not just InMemorySaver's
-# process lifetime — see README "Context management".
 langgraph-checkpoint-sqlite==3.1.1
 
-# --- chat model backends ---
-# Two backends selectable via `--backend`: "huggingface" (HF Inference API,
-# HF_TOKEN in poc/langgraph_rag/.env) and "gemini-api" (direct Google AI
-# Studio API key, GEMINI_API_KEY) — see README "Backends actually available".
-langchain-google-genai==4.3.2  # imported directly by rag_pipeline.py
-langchain-openai==1.1.0  # ChatOpenAI used by the litellm and vllm backends
+# Chat model backends
+langchain-google-genai==4.3.2
+langchain-openai==1.1.0
 langchain-huggingface==1.2.2
 huggingface_hub==1.26.1
 
-# --- local embedder ---
-# `build_embedder()` runs sentence-transformers/all-MiniLM-L6-v2 LOCALLY
-# (langchain_huggingface.HuggingFaceEmbeddings) instead of via the HF
-# Inference API, by explicit request — embedding calls no longer depend on
-# HF Inference credits/availability at all. Pulls in torch (CPU wheel from
-# PyPI by default on Windows) — a real, sizeable download, expected given
-# what "run it locally" means.
-sentence-transformers==5.7.0
+# Retrieval / indexing
+opensearch-py==2.8.0
+langchain-text-splitters==1.1.2
 
-# --- retrieval: LangChain-native replacements for Agno's Qdrant/rerank wrappers ---
-qdrant-client==1.19.0
-langchain-qdrant==1.1.0    # RetrievalMode.HYBRID: native dense+sparse Qdrant Query
-                            # API prefetch+RRF, see rag_pipeline.py's
-                            # retrieve_and_rerank/build_sparse_embedder
-langchain-text-splitters==1.1.2    # RecursiveCharacterTextSplitter — dynamic,
-                                    # content-adaptive chunking for prose uploads,
-                                    # replacing an earlier hand-rolled fixed-size
-                                    # splitter; see rag_pipeline.py's chunk_text
-fastembed==0.8.0    # backs BOTH the sparse leg (Qdrant/bm25, via langchain_qdrant.
-                     # FastEmbedSparse) AND the LOCAL cross-encoder reranker
-                     # (jinaai/jina-reranker-v1-turbo-en, ONNX, no API key)
-tenacity==9.1.4     # retry/backoff for transient Qdrant/HF network failures
-                     # (_to_thread_with_retry) — already a transitive langchain dep,
-                     # listed explicitly now that rag_pipeline.py imports it directly
+# Local reranking only; this is not used for vector retrieval.
+fastembed==0.8.0
 
-tavily-python==0.7.27        # backs tools/web_search_tool.py
-google-genai==2.17.0        # direct provider SDK used by langchain-google-genai
+# Provider / API utilities
+tavily-python==0.7.27
+google-genai==2.17.0
 pydantic==2.13.4
 python-dotenv==1.2.2
 
-# --- ingest_document / document upload: PDF/DOCX/legacy-DOC text extraction ---
-# shared/text_extractors.py — pdfplumber for PDF, python-docx for DOCX,
-# LibreOffice-headless fallback for legacy .doc.
+# Document extraction
 pdfplumber==0.11.9
 python-docx==1.2.0
 
-# --- scripts/data_analysis_poc.py only ---
+# Data analysis demo
 pandas==3.0.5
 openpyxl==3.1.5
 
-# --- app/streamlit_app.py only ("just for now" frontend, per explicit ask) ---
+# UI
 streamlit==1.61.1
 
-# --- dev/test-only, not needed to run the app itself ---
+# Tests / tooling
 pytest==8.4.2
 pytest-asyncio==0.26.0
 pytest-cov==6.0.0
-
 setuptools>=75
 
-# Optional primary-source MCP client (Katzilla Streamable HTTP integration).
+# Optional primary-source MCP client
 mcp>=2,<3

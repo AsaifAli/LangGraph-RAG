@@ -26,7 +26,7 @@ poc/langgraph_rag/
 │   └── custom_langgraph_poc.py    # the production agent (lean LangGraph, no deepagents)
 ├── retrieval/                     # config, retrieval pipeline, filters
 │   ├── rag_pipeline.py
-│   ├── kb_filter_builder.py        # Qdrant tenant/document filter builder
+│   ├── kb_filter_builder.py        # OpenSearch tenant/document filter builder
 │   └── entity_filters.py           # canonical person/org entity filter conditions
 ├── tools/
 │   └── web_search_tool.py         # Tavily-backed web search
@@ -35,7 +35,7 @@ poc/langgraph_rag/
 ├── config/
 │   └── loader.py                  # reads this app's own .env
 ├── shared/                        # leaf modules used across the tree
-│   ├── constants.py                 # Qdrant payload keys, rerank model id, error codes
+│   ├── constants.py                 # OpenSearch payload keys, rerank model id, error codes
 │   ├── exceptions.py                # ApplicationError/StorageError
 │   ├── entities.py                  # SanitizedQuery/SecureAgentRequest — real runtime isinstance checks
 │   ├── query_merge.py               # merge_web_search_query
@@ -84,7 +84,7 @@ underneath the agent.
 - **Config and constants**: `_get_env()` reads every tunable value from
   `.env` (model ids, tenant identity, chunk size, rerank thresholds, retry
   policy) — nothing is hardcoded in the scripts that follow.
-- **Retrieval**: `retrieve_and_rerank()` — hybrid dense+sparse Qdrant search
+- **Retrieval**: `retrieve_and_rerank()` — sparse-first lexical + neural-sparse OpenSearch search
   (native `RetrievalMode.HYBRID`, server-side RRF fusion) followed by a
   local cross-encoder rerank (`jinaai/jina-reranker-v1-turbo-en`).
   Guarantees a per-document fallback floor so a multi-document comparison
@@ -92,7 +92,7 @@ underneath the agent.
 - **Self-correction**: `retrieve_with_self_correction()` wraps the above
   with a grade → rewrite → retry-once loop (LangGraph's agentic-RAG
   pattern) — catches a bad *query*, which reranking alone can't fix.
-- **Whole-document fetch**: `fetch_all_document_chunks()` — a plain Qdrant
+- **Whole-document fetch**: `fetch_all_document_chunks()` — a plain OpenSearch
   payload scroll (no similarity ranking), for genuine "summarize this whole
   document" requests that top-k similarity retrieval would only partially see.
 - **Chunking**: `chunk_text()` — dynamic, content-adaptive splitting for
@@ -102,11 +102,11 @@ underneath the agent.
   repeated header, tabular data — a text splitter has no concept of "a
   row," so this stays purpose-built rather than switching tools).
 - **Ingestion/deletion**: `ingest_document()`, `delete_document()` — both
-  operate on the same Qdrant collection `retrieve_and_rerank` reads from.
+  operate on the same OpenSearch collection `retrieve_and_rerank` reads from.
 - **Model construction**: `build_langchain_model(backend)` — returns a
   ready-to-use chat model for one of two backends (`gemini-api` default,
   `huggingface`).
-- **Supporting modules**: the tenant/document Qdrant filter builder
+- **Supporting modules**: the tenant/document OpenSearch filter builder
   (`retrieval/kb_filter_builder.py`), the citation verifier
   (`citations/verifier.py`), the web-search tool + query-merge logic
   (`tools/web_search_tool.py`, `shared/query_merge.py`), and document text
@@ -202,7 +202,7 @@ build-once / invoke-many API — no agent logic lives here.
   PER-CHAT (stored inside that chat's own `chat_history/<thread_id>.json`,
   `chat_uploaded_docs`) — visible only in the chat they were attached to,
   reset on "New chat," loaded fresh on switching, and deleted for real from
-  Qdrant when that chat is deleted. Document names (not just ids) are also
+  OpenSearch when that chat is deleted. Document names (not just ids) are also
   read live every turn (`_document_names_in_scope`), so the agent's routing
   prompt can reason about a real document's name instead of a bare UUID.
 - Streams token-by-token via `astream_langgraph_turn`, with a live status
@@ -217,7 +217,7 @@ build-once / invoke-many API — no agent logic lives here.
   live only in its own in-memory graph state for the duration of one turn.
 - **`chat_history/`** — the chat UI's persistent state: the checkpointer
   database, one JSON file per conversation, and the global document
-  registry. Real user data — never wiped by a test run or a Qdrant
+  registry. Real user data — never wiped by a test run or a OpenSearch
   collection recreation without an explicit, disclosed reason.
 - **`fixtures/sample_policy_schedule.csv`** — the one bundled demo file,
   used by `scripts/seed_demo_kb.py` and `scripts/data_analysis_poc.py`.
@@ -231,7 +231,7 @@ build-once / invoke-many API — no agent logic lives here.
    rewrites the question into a self-contained query using conversation
    history.
 3. If KB-bound: `retrieve_kb` either calls
-   `retrieval.rag_pipeline.retrieve_with_self_correction` (SEARCH — hybrid retrieval,
+   `retrieval.rag_pipeline.retrieve_with_self_correction` (SEARCH — sparse-first retrieval,
    rerank, grade/rewrite retry if the first pass looks weak) or
    `fetch_all_document_chunks` (SUMMARY/COMPARE — every chunk of the
    target document(s), no ranking).

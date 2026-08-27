@@ -1,47 +1,42 @@
-# Render Hosted Retrieval Profile
+# Hosted OpenSearch Retrieval Profile
 
-This deployment preserves the real retrieval architecture while moving only the heavyweight model inference out of the Render container.
+The current application is designed around OpenSearch sparse-first retrieval. The container can connect to any hosted OpenSearch endpoint; the endpoint must already provide the sparse-search plugin/model capability if `OPENSEARCH_NEURAL_SPARSE=true` is desired.
 
 ## Runtime architecture
 
 ```text
-Render Streamlit / LangGraph
+Streamlit / LangGraph
         |
-        +--> Qdrant Cloud Inference
-        |       |- sentence-transformers/all-MiniLM-L6-v2 (dense, 384d)
-        |       `- Qdrant/bm25 (sparse)
+        +--> OpenSearch lexical retrieval
+        |       |- BM25
+        |       |- exact / phrase / fuzzy
+        |       `- metadata + field boosts
         |
-        +--> Qdrant Query API -> Reciprocal Rank Fusion (RRF)
+        +--> optional neural-sparse retrieval
+        |       `- inverted-index sparse representation
         |
-        +--> Jina reranker API -> jina-reranker-v1-turbo-en
-        |
-        `--> shared LLM gateway / BYOK model
+        +--> RRF fusion
+        +--> local cross-encoder reranking
+        +--> evidence verification / guardrails
+        `--> LLM synthesis
 ```
 
-The dense model is intentionally the same `all-MiniLM-L6-v2` used by the local profile, so the vector space remains 384-dimensional. Qdrant Cloud Inference can host this model and its BM25 sparse model directly, and Qdrant performs dense+sparse hybrid fusion with RRF server-side.
-
-The Render image therefore excludes the heavy local `torch`, `sentence-transformers`, and `fastembed` runtime path.
+No dense k-NN vector retrieval is used by this profile. OpenSearch neural-sparse is optional; the application falls back to lexical retrieval if sparse-model provisioning is unavailable. OpenSearch documents neural sparse search as an inverted-index-based alternative to dense retrieval, and its current documentation recommends doc-only mode for a good performance/relevance balance.
 
 ## Environment variables
 
 ```
-RETRIEVAL_BACKEND=qdrant-cloud
-RERANK_BACKEND=jina
-HOSTED_DENSE_MODEL=sentence-transformers/all-MiniLM-L6-v2
-HOSTED_SPARSE_MODEL=Qdrant/bm25
-HOSTED_DENSE_VECTOR_SIZE=384
-QDRANT_URL=<free Qdrant Cloud cluster>
-QDRANT_API_KEY=<Qdrant API key>
-JINA_API_KEY=<Jina API key>
+OPENSEARCH_URL=<hosted OpenSearch endpoint>
+OPENSEARCH_USERNAME=<username>
+OPENSEARCH_PASSWORD=<password>
+OPENSEARCH_VERIFY_CERTS=true
+OPENSEARCH_NEURAL_SPARSE=true
+RERANK_ENABLED=true
+JINA_API_KEY=<optional, only if using a hosted reranker>
 ```
 
-The local Streamlit/Compose profile remains unchanged unless these backend variables are changed.
+The default application uses the local cross-encoder via `fastembed`, so no Jina API key is required for reranking.
 
-## First deployment
+## Free-hosting caveat
 
-1. Create/verify a Qdrant Cloud Free Cluster with Cloud Inference enabled.
-2. Create/seed the hybrid collection from this application.
-3. Seed the synthetic demo documents: `python -m scripts.seed_demo_kb`.
-4. Deploy this repository to Render using `render.yaml`.
-5. Confirm `/_stcore/health`.
-6. Run a targeted document query and verify retrieved evidence.
+OpenSearch with local neural-sparse model hosting is resource-intensive. The local Docker profile is the primary reproducible path. A truly free hosted Streamlit service still needs a separately hosted OpenSearch endpoint; the public application should not silently assume that a free managed OpenSearch cluster exists.

@@ -1,4 +1,4 @@
-"""Request/query entities `build_kb_filter_expr` (retrieval/kb_filter_builder.py)
+"""Request/query entities the retrieval layer
 operates on. `SecureAgentRequest.__post_init__` enforces a real
 `isinstance(self.query, SanitizedQuery)` check — the query has to actually
 be a `SanitizedQuery` instance, not a plain string or dict, so a caller
@@ -65,7 +65,7 @@ class AccessibleDocumentMeta:
 class SecureAgentRequest:
     """Immutable secure agent request with enforced sanitization.
 
-    `build_kb_filter_expr` (retrieval/kb_filter_builder.py) reads
+    the retrieval layer reads
     `.tenant_schema`, `.platform_tenant_id`, `.document_ids`, `.person_ids`,
     `.org_ids` off this; rag_pipeline.py constructs one per retrieval call.
     """

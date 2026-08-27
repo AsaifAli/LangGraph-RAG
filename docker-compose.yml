@@ -1,13 +1,7 @@
-# Starts the whole POC — chat UI + its vector store — with one command:
-#   cd poc/langgraph_rag && docker compose up --build
-#
-# Uses the LiteLLM gateway by default. Create a local `.env` from `.env.example`
-# for secrets such as LITELLM_MASTER_KEY and OPENROUTER_API_KEY. The `.env`
-# file is optional because Docker Compose injects the gateway defaults directly.
 services:
   litellm:
     image: litellm/litellm:1.94.0
-    container_name: langgraph-rag-litellm
+    container_name: evidenceflow-litellm
     command: ["--config", "/app/config.yaml", "--port", "4000"]
     environment:
       LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-}
@@ -19,71 +13,55 @@ services:
       - ./litellm_config.yaml:/app/config.yaml:ro
     restart: unless-stopped
 
-  qdrant:
-    image: qdrant/qdrant:v1.16.2  # matches the pinned qdrant-client version in requirements.txt
+  opensearch:
+    image: opensearchproject/opensearch:3.3.2
+    container_name: evidenceflow-opensearch
+    environment:
+      - discovery.type=single-node
+      - bootstrap.memory_lock=true
+      - OPENSEARCH_JAVA_OPTS=-Xms2g -Xmx2g
+      - DISABLE_INSTALL_DEMO_CONFIG=true
+      - DISABLE_SECURITY_PLUGIN=true
+      - plugins.ml_commons.allow_registering_model_via_url=true
+      - plugins.ml_commons.only_run_on_ml_node=false
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
     ports:
-      # Host-side ports intentionally NOT the Qdrant defaults (6333/6334) —
-      # a machine already running another Qdrant instance on those ports
-      # (a common case for a dev box) would otherwise fail to start this
-      # stack at all. The `app` service never uses these; it always talks
-      # to `qdrant:6333` over the internal compose network (see QDRANT_URL
-      # below) — these are for host-side debugging only
-      # (http://localhost:16333/dashboard).
-      - "16333:6333"
-      - "16334:6334"
+      - "19200:9200"
+      - "19600:9600"
     volumes:
-      - qdrant_data:/qdrant/storage
+      - opensearch_data:/usr/share/opensearch/data
     healthcheck:
-      # The official qdrant/qdrant image has no curl/wget/python3 (verified
-      # directly: `docker exec ... which curl wget python3` all came back
-      # empty) — an earlier version of this check called python3 and never
-      # passed, which silently blocked `app` from ever starting at all
-      # (depends_on: condition: service_healthy). bash IS present, so this
-      # uses its `/dev/tcp` pseudo-device for a dependency-free TCP check
-      # instead of an HTTP one.
-      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/localhost/6333' || exit 1"]
-      interval: 5s
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/localhost/9200' || exit 1"]
+      interval: 10s
       timeout: 5s
-      retries: 10
-      start_period: 10s
+      retries: 20
+      start_period: 30s
+    restart: unless-stopped
 
   app:
     build: .
+    container_name: evidenceflow-app
     ports:
-      # Host-side port intentionally NOT Streamlit's default 8501 — found
-      # necessary live: a completely unrelated project's own Streamlit
-      # container on the same Docker daemon (`pipassignments-streamlit-1`)
-      # also defaults to 8501, so both stacks fought over the same host
-      # port and this container got stuck in "Created" forever ("Bind for
-      # 0.0.0.0:8501 failed: port is already allocated"), never actually
-      # starting. The container's own internal port is still 8501
-      # (unchanged, no code/CMD change needed) — only the host-side mapping
-      # moved.
       - "18501:8501"
     env_file:
       - path: .env
         required: false
     environment:
-      # Overrides whatever QDRANT_URL is (or isn't) set to in .env — inside
-      # the compose network, Qdrant is reachable at its service name, never
-      # localhost (that would resolve to the app container itself).
-      QDRANT_URL: http://qdrant:6333
-      # Forces huggingface_hub's classic HTTP downloader instead of the
-      # newer `hf_xet` fast-transfer client. Found necessary live: the first
-      # embedder-model download failed outright — hf_xet's CDN
-      # (us.aws.cdn.hf.co/xorbs/...) returned repeated 500 Internal Server
-      # Errors for this model's weight blobs, exhausted its 5 retries, and
-      # aborted, leaving a cache with only metadata JSON files and no actual
-      # weights (see xet debug log:
-      # /app/.cache/huggingface/xet/logs/*.log). The classic HTTP endpoint
-      # for the same files doesn't go through that CDN path at all.
-      HF_HUB_DISABLE_XET: "1"
+      OPENSEARCH_URL: http://opensearch:9200
+      OPENSEARCH_USERNAME: ${OPENSEARCH_USERNAME:-admin}
+      OPENSEARCH_PASSWORD: ${OPENSEARCH_PASSWORD:-admin}
+      OPENSEARCH_INDEX: ${OPENSEARCH_INDEX:-evidenceflow_documents}
+      OPENSEARCH_NEURAL_SPARSE: ${OPENSEARCH_NEURAL_SPARSE:-true}
+      OPENSEARCH_VERIFY_CERTS: "false"
       BACKEND: ${BACKEND:-litellm}
       LLM_GATEWAY_URL: ${LLM_GATEWAY_URL:-http://litellm:4000/v1}
       LLM_GATEWAY_API_KEY: ${LITELLM_MASTER_KEY:-}
-      # Leave the model unset by default; the app selects portfolio-free
-      # when OPENROUTER_API_KEY exists, or portfolio-gemini when only
-      # GEMINI_API_KEY exists. An explicit LLM_GATEWAY_MODEL always wins.
       LLM_GATEWAY_MODEL: ${LLM_GATEWAY_MODEL:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       OPENROUTER_LITELLM_MODEL: ${OPENROUTER_LITELLM_MODEL:-openrouter/free}
@@ -91,20 +69,14 @@ services:
     depends_on:
       litellm:
         condition: service_started
-      qdrant:
+      opensearch:
         condition: service_healthy
     volumes:
-      # Chat history/uploaded-document registry survive a container
-      # recreate (`docker compose up` after a rebuild) instead of resetting
-      # every time — same durability goal as README "Context management"'s
-      # AsyncSqliteSaver, just persisted outside the container filesystem.
       - chat_history:/app/chat_history
-      # Embedder + reranker model weights (~1GB, sentence-transformers +
-      # fastembed) — cached across rebuilds so `docker compose up` after a
-      # code change doesn't re-download them.
       - hf_cache:/app/.cache/huggingface
+    restart: unless-stopped
 
 volumes:
-  qdrant_data:
+  opensearch_data:
   chat_history:
   hf_cache:

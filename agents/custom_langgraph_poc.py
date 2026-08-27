@@ -12,11 +12,11 @@ descriptions, `task()`/`write_todos` tool schemas, subagent middleware
 instructions)? A live run of the deepagents version against a two-fact
 policy lookup measured 38,751 total tokens.
 
-Accuracy is deliberately NOT the variable this design changes: this graph
-reuses `rag_pipeline.retrieve_with_self_correction` (hybrid dense+sparse
-retrieval, local cross-encoder rerank, grade -> rewrite -> retry
-self-correction) and the same citation verifier the deepagents version
-used, completely unchanged. Only orchestration overhead is different.
+Retrieval is deliberately sparse-first in this release: OpenSearch lexical
+retrieval (BM25/exact/phrase/fuzzy/metadata), optional neural-sparse
+retrieval over an inverted index, bounded RRF fusion, local cross-encoder
+reranking, and bounded agentic query expansion for weak first-pass results.
+The same citation verifier and trust layer are retained.
 
 Of deepagents' mechanisms, this graph keeps the two that earned their keep
 — parallel per-chunk delegation (here: a plain `StateGraph` fan-out via

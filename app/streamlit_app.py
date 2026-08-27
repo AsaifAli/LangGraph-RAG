@@ -55,7 +55,7 @@ request:
   persisted in its own file (`chat_history/uploaded_documents.json`,
   `st.session_state.global_uploaded_docs`), survives "New chat"/switching/
   deleting chats. Removing one is still only the 🗑️ button next to it,
-  which deletes its vectors from Qdrant for real.
+  which deletes its indexed chunks from OpenSearch for real.
 - **Attach-in-chat** (`st.chat_input(accept_file=...)`, "here's a document,
   answer about it" in the flow of asking) — PER-CHAT scope: reachable only
   from the chat it was attached in, stored inside that chat's own
@@ -63,7 +63,7 @@ request:
   `st.session_state.chat_uploaded_docs`). "New chat" starts with none,
   switching chats loads THAT chat's own list, and — unlike the demo-fixture
   gap `_clear_everything` had to close separately — deleting a chat deletes
-  ITS attached documents' vectors from Qdrant too, not just its own JSON
+  ITS attached documents from OpenSearch too, not just its own JSON
   file; a document attached to a DIFFERENT chat, or uploaded globally via
   the sidebar, is never touched by deleting this one.
 
@@ -706,7 +706,7 @@ def _load_uploaded_docs() -> list[dict]:
     chat's uploads in that chat's OWN `uploaded_docs` field, which would
     otherwise strand any already-uploaded document with no path back into
     scope — aggregated here instead (deduped by document_id) so nothing
-    already in Qdrant becomes silently unreachable."""
+    already in OpenSearch becomes silently unreachable."""
     if _UPLOADED_DOCS_PATH.exists():
         try:
             return json.loads(_UPLOADED_DOCS_PATH.read_text(encoding="utf-8"))
@@ -851,7 +851,7 @@ def _run_async(coro, *, timeout: float = _TURN_TIMEOUT_SECONDS):
     once, then stuck" on every turn after the first.
 
     `asyncio.set_event_loop(loop)` on every call, not just at creation: some
-    async libraries in this dependency chain (httpx/huggingface_hub/qdrant's
+    async libraries in this dependency chain (httpx/huggingface_hub/OpenSearch's
     async paths) fall back to `asyncio.get_event_loop()` rather than
     `get_running_loop()` in places; without explicitly marking our persisted
     loop as "the" event loop for this thread every time, such a call could
@@ -873,7 +873,7 @@ def _run_async(coro, *, timeout: float = _TURN_TIMEOUT_SECONDS):
     use the SAME loop object. Rather than crash the whole rerun, fall back to
     a throwaway loop for just this one call when that happens. Safe for
     anything that doesn't depend on the persisted loop's cached async client
-    (e.g. `delete_document`, which only touches Qdrant via
+    (e.g. `delete_document`, which only touches OpenSearch via
     `asyncio.to_thread`); for a chat turn specifically hitting this race, the
     fallback could in principle reintroduce the original "stuck client"
     failure mode this function exists to prevent — but that's still strictly
@@ -883,7 +883,7 @@ def _run_async(coro, *, timeout: float = _TURN_TIMEOUT_SECONDS):
     loop = st.session_state.event_loop
     # Streamlit/Uvicorn can invalidate an event loop during a rerun.  Reusing
     # a closed loop is what produces secondary "client has been closed"
-    # ingestion failures.  Recreate it before any Qdrant/model coroutine is
+    # ingestion failures.  Recreate it before any OpenSearch/model coroutine is
     # scheduled.  The normal path still keeps one loop alive for cached async
     # model clients.
     if loop.is_closed():
@@ -975,7 +975,7 @@ def _delete_chat(thread_id: str) -> None:
     renders), the LangGraph checkpointer's own thread state (what the model
     remembers, via `agent.checkpointer.adelete_thread(thread_id)` — confirmed
     present on the compiled graph), AND — by explicit request — every
-    document that was attached IN this chat, deleted from Qdrant for real
+    document that was attached IN this chat, deleted from OpenSearch for real
     (`rag_pipeline.delete_document`), the same way the 🗑️ per-document button
     does it. GLOBAL (sidebar-uploaded) documents are never touched here —
     only `thread["uploaded_docs"]`, this chat's own per-chat list, is read
@@ -1006,7 +1006,7 @@ def _delete_chat(thread_id: str) -> None:
 
 def _delete_document(document_id: str) -> None:
     """Delete a document for real, not just from the sidebar/scope list:
-    removes its chunks from Qdrant (`rag_pipeline.delete_document` — see
+    removes its chunks from OpenSearch (`rag_pipeline.delete_document` — see
     that function's docstring for how the delete filter is built), then
     drops it from the GLOBAL `uploaded_docs` registry (persisted immediately
     via `_save_uploaded_docs` — this is the only action that removes a
@@ -1033,7 +1033,7 @@ def _delete_document(document_id: str) -> None:
 
 
 def _delete_chat_document(document_id: str) -> None:
-    """PER-CHAT counterpart to `_delete_document` — same real Qdrant
+    """PER-CHAT counterpart to `_delete_document` — same real OpenSearch
     deletion, but removes from `st.session_state.chat_uploaded_docs` (this
     chat's own list) and `chat_ingested_hashes` instead of the global ones.
     Caller is responsible for `_persist_current_chat()` afterward, same as
@@ -1068,7 +1068,7 @@ def _clear_everything() -> None:
 
     Real deletion, matching `_delete_document`/`_delete_chat`'s own honesty
     about what "delete" means here: every document's vectors actually leave
-    Qdrant (not just the sidebar list), and every chat's checkpointer thread
+    OpenSearch (not just the sidebar list), and every chat's checkpointer thread
     is actually dropped (not just its `chat_history/<thread_id>.json` file).
 
         Also deletes every PER-CHAT attached document across every chat, not
@@ -1107,7 +1107,7 @@ def _clear_everything() -> None:
 def _confirm_clear_everything() -> None:
     st.warning(
         "This permanently deletes every chat and every document's vectors from "
-        "Qdrant. This cannot be undone.",
+        "OpenSearch. This cannot be undone.",
         icon="⚠️",
     )
     col_cancel, col_confirm = st.columns(2)
@@ -1126,7 +1126,7 @@ def _document_ids_in_scope() -> list[str]:
     The demo fixture is not implicitly included here.
     An empty result correctly yields an empty knowledge base: verified
     directly against `build_kb_filter_expr` that an empty document_ids list
-    builds a Qdrant `MatchAny(any=[])` filter, which matches zero points,
+    builds an empty OpenSearch document filter rather than expanding scope,
     not "unrestricted" — no separate empty-list guard needed here or in
     retrieval."""
     return [d["document_id"] for d in st.session_state.uploaded_docs] + [
@@ -1578,30 +1578,25 @@ def _record_chat_upload(name: str, document_id: str, chunk_count: int, content_h
 
 
 def _run_status_check() -> dict:
-    """Cheap, timeout-bounded self-check for the sidebar "Status" section —
-    a raw TCP connect to Qdrant, not a full API round trip, so a slow or
-    unreachable instance can't stall page load itself. Added after this
-    session's own real incidents (a Docker port conflict, a misconfigured
-    env var) that only ever surfaced as a raw exception mid-chat — this
-    surfaces the same class of problem before the user asks anything."""
+    """Cheap, timeout-bounded OpenSearch connectivity self-check."""
     import socket
     from urllib.parse import urlparse
 
     config = load_runtime_config()
-    parsed = urlparse(config.vector_db.qdrant_url)
+    parsed = urlparse(config.opensearch.url)
     host = parsed.hostname or "localhost"
-    port = parsed.port or (443 if parsed.scheme == "https" else 80)
-    qdrant_ok = False
-    qdrant_error = "unreachable"
+    port = parsed.port or (443 if parsed.scheme == "https" else 9200)
+    opensearch_ok = False
+    opensearch_error = "unreachable"
     try:
         with socket.create_connection((host, port), timeout=1.5):
-            qdrant_ok = True
-            qdrant_error = ""
+            opensearch_ok = True
+            opensearch_error = ""
     except OSError as exc:
-        qdrant_error = f"unreachable ({exc.__class__.__name__})"
+        opensearch_error = f"unreachable ({exc.__class__.__name__})"
     return {
-        "qdrant_ok": qdrant_ok,
-        "qdrant_error": qdrant_error,
+        "opensearch_ok": opensearch_ok,
+        "opensearch_error": opensearch_error,
         "web_search_configured": bool((config.web_search.web_search_api_key or "").strip()),
         "katzilla_configured": bool(os.environ.get("KATZILLA_API_KEY", "").strip()) and os.environ.get("KATZILLA_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"},
     }
@@ -1781,7 +1776,7 @@ with st.sidebar:
 
     st.divider()
     st.markdown(f'<div class="sidebar-heading">{_icon("search", size=18)}Status</div>', unsafe_allow_html=True)
-    # Worth having after today's real incidents: a Qdrant/backend hiccup
+    # Worth having after today's real incidents: a OpenSearch/backend hiccup
     # used to only surface mid-chat, as a raw exception in the middle of a
     # turn. A cheap self-check at page load surfaces it here instead,
     # before the user even asks a question. Cached in session_state (not
@@ -1792,8 +1787,8 @@ with st.sidebar:
     _status = st.session_state.status_check
     st.markdown(
         f'<div class="doc-chip">{_icon("robot", size=15)}Backend: <code>{_BACKEND}</code></div>'
-        f'<div class="doc-chip">{_icon("search" if _status["qdrant_ok"] else "search-off", size=15)}'
-        f'Qdrant: {"connected" if _status["qdrant_ok"] else _status["qdrant_error"]}</div>'
+        f'<div class="doc-chip">{_icon("search" if _status["opensearch_ok"] else "search-off", size=15)}'
+        f'OpenSearch: {"connected" if _status["opensearch_ok"] else _status["opensearch_error"]}</div>'
         f'<div class="doc-chip">{_icon("world", size=15)}'
         f'Web search: {"configured" if _status["web_search_configured"] else "not configured"}</div>'
         f'<div class="doc-chip">🏛️ Primary-source MCP: {"configured" if _status.get("katzilla_configured") else "not configured"}</div>',
@@ -1986,7 +1981,7 @@ with _main_col:
     if not _has_messages:
         _doc_count = len(st.session_state.uploaded_docs) + len(st.session_state.chat_uploaded_docs)
         _thread_count = len(st.session_state.chat_store.get("threads", []))
-        _status_ok = st.session_state.get("status_check", {}).get("qdrant_ok", True)
+        _status_ok = st.session_state.get("status_check", {}).get("opensearch_ok", True)
         _status_label = "Ready" if _status_ok else "Check backend"
         st.markdown(
             f"""
@@ -1998,7 +1993,7 @@ with _main_col:
                   <div class="ef-landing-sub">EvidenceFlow routes each question across your knowledge base, the web, and trusted primary sources, then carries evidence verification into the final answer.</div>
                   <div class="ef-landing-pills">
                     <span class="ef-landing-pill"><i></i>Agentic routing</span>
-                    <span class="ef-landing-pill"><i></i>Hybrid retrieval</span>
+                    <span class="ef-landing-pill"><i></i>Lexical + neural sparse</span>
                     <span class="ef-landing-pill"><i></i>Evidence verification</span>
                     <span class="ef-landing-pill"><i></i>Persistent threads</span>
                   </div>

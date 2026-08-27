@@ -1,4 +1,4 @@
-"""Ingest a local document into the POC's demo Qdrant collection, so
+"""Ingest a local document into the POC's demo OpenSearch index, so
 custom_langgraph_poc.py can retrieve from it.
 
 CLI counterpart to streamlit_app.py's upload widgets — both call the same

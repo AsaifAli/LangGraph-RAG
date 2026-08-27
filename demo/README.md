@@ -4,7 +4,7 @@ This directory contains small synthetic documents designed for a recruiter-frien
 
 ## Suggested demo flow
 
-1. Seed both documents into local Qdrant.
+1. Seed both documents into local OpenSearch.
 2. Ask a single-document fact question.
 3. Ask a cross-document comparison.
 4. Ask an unanswerable question and show the system abstaining.

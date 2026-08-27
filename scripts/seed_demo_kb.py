@@ -1,4 +1,4 @@
-"""Seed the synthetic portfolio demo documents into local Qdrant.
+"""Seed the synthetic portfolio demo documents into local OpenSearch.
 
 The demo content lives under ``demo/`` so the application code stays generic.
 The two fixed document IDs make the benchmark reproducible. Re-running the

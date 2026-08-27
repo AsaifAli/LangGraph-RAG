@@ -5,7 +5,7 @@ This project is prepared for Streamlit Community Cloud rather than a Docker Spac
 Runtime path:
 - Streamlit UI
 - local CPU embedding + sparse encoder + reranker
-- external Qdrant Cloud
+- external OpenSearch cluster
 - external OpenRouter LLM
 
 Required secrets/variables in the Community Cloud Advanced settings:
@@ -22,4 +22,4 @@ Required secrets/variables in the Community Cloud Advanced settings:
 Optional:
 - `TAVILY_API_KEY` for live web research.
 
-The app's local chat SQLite state and uploaded files are ephemeral on hosted restarts; durable knowledge-base vectors live in Qdrant.
+The app's local chat SQLite state and uploaded files are ephemeral on hosted restarts; durable knowledge-base indexes live in OpenSearch.

@@ -1,13 +1,9 @@
-"""Runtime configuration for this app: exposes only the fields this
-codebase actually reads (grepped across every module, not guessed) —
-Qdrant connection, the hybrid-retrieval prefetch multiplier, Tavily
-web-search config, and the LibreOffice path used by the legacy-`.doc`
-text-extraction fallback.
+"""Runtime configuration for the EvidenceFlow search stack.
 
-Reads this app's own `.env` (this directory) — never anything outside
-`poc/langgraph_rag/`. Uses `dotenv_values` (not `load_dotenv`), same as
-`rag_pipeline._get_env`, so this config never leaks into the real process
-`os.environ` — see that function's docstring for why.
+The project no longer uses a vector database. Retrieval is implemented with
+OpenSearch using classical lexical search plus optional neural-sparse search,
+with the LLM used only as a targeted query planner when the first retrieval
+pass is weak.
 """
 
 from __future__ import annotations
@@ -21,17 +17,7 @@ _POC_DIR = Path(__file__).resolve().parent.parent
 
 
 def _env(key: str, default: str) -> str:
-    """Read one config value: `.env` first, then `os.environ`, then
-    `default` — same precedence as `rag_pipeline._get_env`. This module
-    used to read ONLY `dotenv_values(...)`, with no `os.environ` fallback
-    at all — a real bug found live in Docker: with no `.env` file in the
-    image (by design, see `.dockerignore`), `QDRANT_URL` silently fell back
-    straight to the hardcoded `http://localhost:6333` default, ignoring the
-    `QDRANT_URL=http://qdrant:6333` docker-compose sets via `environment:`
-    — every Qdrant call then tried to reach the app container's own
-    localhost instead of the qdrant service, failing with `Connection
-    refused` even though both containers were healthy and the network path
-    was fine."""
+    """Read `.env` first, then process environment, then the default."""
     from dotenv import dotenv_values
 
     values = dotenv_values(_POC_DIR / ".env")
@@ -46,14 +32,25 @@ def _env(key: str, default: str) -> str:
 
 
 @dataclass(frozen=True)
-class VectorDBConfig:
-    qdrant_url: str
-    qdrant_api_key: Optional[str]
+class OpenSearchConfig:
+    url: str
+    username: Optional[str]
+    password: Optional[str]
+    index_name: str
+    verify_certs: bool
+    neural_sparse_enabled: bool
+    sparse_model_name: str
+    sparse_tokenizer_name: str
+    sparse_prune_ratio: float
+    lexical_candidate_k: int
+    neural_candidate_k: int
+    rerank_candidate_k: int
 
 
 @dataclass(frozen=True)
 class RerankConfig:
-    hybrid_prefetch_multiplier: int
+    enabled: bool
+    model_name: str
 
 
 @dataclass(frozen=True)
@@ -69,7 +66,7 @@ class LibConfig:
 
 @dataclass(frozen=True)
 class Config:
-    vector_db: VectorDBConfig
+    opensearch: OpenSearchConfig
     rerank: RerankConfig
     web_search: WebSearchConfig
     lib: LibConfig
@@ -79,17 +76,33 @@ _config: Optional[Config] = None
 
 
 def load_config() -> Config:
-    """Read fresh every call (not cached at import time) — matches
-    `rag_pipeline.load_runtime_config`'s own freshness behavior, so editing
-    `.env` takes effect on the next Streamlit rerun without a process
-    restart."""
     return Config(
-        vector_db=VectorDBConfig(
-            qdrant_url=_env("QDRANT_URL", "http://localhost:6333"),
-            qdrant_api_key=_env("QDRANT_API_KEY", "").strip() or None,
+        opensearch=OpenSearchConfig(
+            url=_env("OPENSEARCH_URL", "http://localhost:9200").strip(),
+            username=_env("OPENSEARCH_USERNAME", "admin").strip() or None,
+            password=_env("OPENSEARCH_PASSWORD", "admin").strip() or None,
+            index_name=_env("OPENSEARCH_INDEX", "evidenceflow_documents").strip(),
+            verify_certs=_env("OPENSEARCH_VERIFY_CERTS", "false").strip().lower()
+            in {"1", "true", "yes", "on"},
+            neural_sparse_enabled=_env("OPENSEARCH_NEURAL_SPARSE", "true").strip().lower()
+            in {"1", "true", "yes", "on"},
+            sparse_model_name=_env(
+                "OPENSEARCH_SPARSE_MODEL",
+                "amazon/neural-sparse/opensearch-neural-sparse-encoding-doc-v3-distill",
+            ).strip(),
+            sparse_tokenizer_name=_env(
+                "OPENSEARCH_SPARSE_TOKENIZER",
+                "amazon/neural-sparse/opensearch-neural-sparse-tokenizer-v1",
+            ).strip(),
+            sparse_prune_ratio=float(_env("OPENSEARCH_SPARSE_PRUNE_RATIO", "0.1")),
+            lexical_candidate_k=int(_env("LEXICAL_CANDIDATE_K", "40")),
+            neural_candidate_k=int(_env("NEURAL_CANDIDATE_K", "40")),
+            rerank_candidate_k=int(_env("RERANK_CANDIDATE_K", "30")),
         ),
         rerank=RerankConfig(
-            hybrid_prefetch_multiplier=int(_env("HYBRID_PREFETCH_MULTIPLIER", "3")),
+            enabled=_env("RERANK_ENABLED", "true").strip().lower()
+            in {"1", "true", "yes", "on"},
+            model_name=_env("JINA_RERANK_MODEL", _env("RERANK_MODEL", "jina-reranker-v1-turbo-en")).strip(),
         ),
         web_search=WebSearchConfig(
             web_search_api_key=(
@@ -105,9 +118,6 @@ def load_config() -> Config:
 
 
 def get_config() -> Config:
-    """Cached accessor — `text_extractors.py`'s rare `.doc`-via-LibreOffice
-    fallback calls this directly rather than threading a Config through
-    every extractor call."""
     global _config
     if _config is None:
         _config = load_config()

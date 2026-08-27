@@ -1,14 +1,22 @@
 from retrieval import rag_pipeline as rp
 
 
-def test_default_local_retrieval_mode():
-    # The repository remains backwards compatible unless Render explicitly
-    # switches RETRIEVAL_BACKEND/RERANK_BACKEND through environment variables.
-    assert rp.RETRIEVAL_BACKEND in {"local", "qdrant-cloud", "qdrant_cloud", "hosted"}
-    assert rp.RERANK_BACKEND in {"local", "jina", "hosted"}
+def test_sparse_first_defaults():
+    assert rp.OPENSEARCH_NEURAL_SPARSE is True
+    assert rp.RRF_K == 60
+    assert rp.RERANK_ENABLED is True
 
 
-def test_hosted_models_preserve_current_vector_space():
-    assert rp.HOSTED_DENSE_MODEL.lower() == "sentence-transformers/all-minilm-l6-v2"
-    assert rp.HOSTED_SPARSE_MODEL == "Qdrant/bm25"
-    assert rp.HOSTED_DENSE_VECTOR_SIZE == 384
+def test_opensearch_index_name_is_safe():
+    name = rp.opensearch_index_name("Portfolio Demo", "agentic/rag")
+    assert " " not in name
+    assert "/" not in name
+    assert name.endswith("evidenceflow_documents")
+
+
+def test_neural_sparse_query_uses_no_dense_vector_clause():
+    body = rp._neural_query_body("approval criteria", ["doc-1"], "schema", "tenant", 5)
+    raw = str(body).lower()
+    assert "neural_sparse" in raw
+    assert "knn" not in raw
+    assert "dense" not in raw
