@@ -392,18 +392,70 @@ def chunk_text(text: str, *, chunk_size: int = DEFAULT_CHUNK_SIZE, overlap: int 
     return splitter.split_text(text)
 
 
-def chunk_csv_text(text: str, *, max_rows: int = 24, overlap_rows: int = DEFAULT_CSV_OVERLAP_ROWS) -> list[str]:
-    lines = text.splitlines()
+def chunk_csv_text(
+    text: str,
+    *,
+    chunk_size: int = DEFAULT_CHUNK_SIZE,
+    overlap_rows: int = DEFAULT_CSV_OVERLAP_ROWS,
+    max_rows: int | None = None,
+) -> list[str]:
+    """Chunk CSV text without splitting rows and with a repeated header.
+
+    ``chunk_size`` is measured approximately in characters and is used to pack
+    as many complete rows as fit while always retaining the header.
+    ``overlap_rows`` repeats the trailing rows of the previous chunk at the
+    start of the next chunk. ``max_rows`` is retained as a backwards-compatible
+    row-count cap for older callers; when supplied it takes precedence over the
+    size-based packing. Blank/whitespace-only lines are ignored.
+    """
+    lines = [line for line in text.splitlines() if line.strip()]
     if not lines:
         return []
-    header = lines[0]
-    rows = lines[1:]
+
+    header = lines[0].strip()
+    rows = [line.strip() for line in lines[1:] if line.strip()]
+    if not header:
+        return []
+    if not rows:
+        return [header]
+
+    if max_rows is not None:
+        if max_rows <= 0:
+            raise ValueError("max_rows must be positive")
+        row_capacity = max_rows
+    else:
+        if chunk_size <= 0:
+            raise ValueError("chunk_size must be positive")
+        row_capacity = None
+
+    if overlap_rows < 0:
+        raise ValueError("overlap_rows must be non-negative")
+
+    row_groups: list[list[str]] = []
+    current: list[str] = []
+    current_len = len(header)
+
+    for row in rows:
+        if row_capacity is not None:
+            if current and len(current) >= row_capacity:
+                row_groups.append(current)
+                current = []
+                current_len = len(header)
+        elif current and current_len + 1 + len(row) > chunk_size:
+            row_groups.append(current)
+            current = []
+            current_len = len(header)
+
+        current.append(row)
+        current_len += 1 + len(row)
+
+    if current:
+        row_groups.append(current)
+
     chunks: list[str] = []
-    step = max(1, max_rows - overlap_rows)
-    for start in range(0, len(rows), step):
-        window = rows[start : start + max_rows]
-        if window:
-            chunks.append("\n".join([header, *window]))
+    for i, group in enumerate(row_groups):
+        carried = row_groups[i - 1][-overlap_rows:] if i > 0 and overlap_rows else []
+        chunks.append("\n".join([header, *carried, *group]))
     return chunks
 
 
