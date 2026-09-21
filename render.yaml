@@ -57,3 +57,26 @@ services:
         value: "true"
       - key: KATZILLA_API_KEY
         sync: false
+
+  - type: web
+    name: evidenceflow-harness
+    env: docker
+    dockerfilePath: ./Dockerfile.harness
+    dockerContext: .
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: OPENSEARCH_URL
+        sync: false
+      - key: OPENSEARCH_USERNAME
+        sync: false
+      - key: OPENSEARCH_PASSWORD
+        sync: false
+      - key: OPENSEARCH_INDEX
+        value: evidenceflow_documents
+      - key: OPENSEARCH_VERIFY_CERTS
+        value: "true"
+      - key: TENANT_SCHEMA
+        value: portfolio_demo
+      - key: PLATFORM_TENANT_ID
+        value: agentic_rag
