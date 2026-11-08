@@ -39,7 +39,7 @@ _DEFAULT_AUTO_PARAMETERS = True
 # (auto_parameters still tunes search_depth/time_range), then scored, and the
 # highest-scoring response is returned. Ordered so "general" wins score ties —
 # it is the safer default when both topics are equally confident.
-_DUAL_SEARCH_TOPICS = ("general", "news")
+_DUAL_SEARCH_TOPICS = ("general", "news", "finance")
 
 # Answers that carry no real information. When Tavily's `answer` matches this on
 # a short response, the topic is strongly deprioritized so a topic that actually

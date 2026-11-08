@@ -108,7 +108,7 @@ if str(_POC_ROOT) not in sys.path:
     sys.path.insert(0, str(_POC_ROOT))
 
 from sidebar_toggle import render_sidebar_toggle  # noqa: E402
-from agents.custom_langgraph_poc import astream_langgraph_turn, build_langgraph_agent  # noqa: E402
+from agents.multi_agent_orchestrator import astream_langgraph_turn, build_langgraph_agent
 from citations.verifier import verify_reference  # noqa: E402
 from retrieval.rag_pipeline import (  # noqa: E402
     DEFAULT_BACKEND,

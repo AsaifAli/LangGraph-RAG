@@ -1118,6 +1118,8 @@ def _finalize_outcome(state_values: dict, token_tracker, web_search_tool) -> dic
         "used_web": web_used,
         "used_primary_source": primary_source_used,
         "primary_source": state_values.get("primary_source_meta", {}),
+        "web_evidence": state_values.get("web_summary", ""),
+        "primary_source_evidence": state_values.get("primary_source_summary", ""),
         "grounding_status": verified.grounding_status if verified else None,
         "abstained": abstain,
         "abstention_reason": "NO_VERIFIED_KB_EVIDENCE" if abstain else None,
@@ -1241,6 +1243,39 @@ async def astream_langgraph_turn(
     }
     _STREAM_NODES = {"synthesize", "route"}
     seen_status: set[str] = set()
+    root_run_id: str | None = None
+    final_state: dict[str, Any] | None = None
+
+    async for event in agent.astream_events(_turn_input(built, query), config=config, version="v2"):
+        kind = event.get("event")
+        name = event.get("name", "")
+        node = (event.get("metadata") or {}).get("langgraph_node")
+
+        if kind == "on_chain_start" and not event.get("parent_ids"):
+            root_run_id = event.get("run_id")
+        elif (
+            kind == "on_chain_end"
+            and root_run_id is not None
+            and event.get("run_id") == root_run_id
+        ):
+            output = (event.get("data") or {}).get("output")
+            if isinstance(output, dict):
+                final_state = output
+
+        if kind == "on_chain_start" and name in _STATUS_LABELS and name not in seen_status:
+            seen_status.add(name)
+            yield {"type": "status", "text": f"{_STATUS_LABELS[name]}..."}
+        elif kind == "on_chat_model_stream" and node in _STREAM_NODES:
+            delta = content_to_text(getattr(event["data"]["chunk"], "content", None))
+            if delta:
+                yield {"type": "token", "text": delta}
+
+    if final_state is None:
+        raise RuntimeError("Streaming completed without receiving the final graph state.")
+
+    outcome = _finalize_outcome(final_state, token_tracker, built["web_search_tool"])
+    outcome["type"] = "final"
+    yield outcome
 
     async for event in agent.astream_events(_turn_input(built, query), config=config, version="v2"):
         kind = event.get("event")
