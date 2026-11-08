@@ -206,11 +206,36 @@ def parse_audit_response(raw_response: str) -> EvidenceAuditDecision:
     )
 
 
-def _get_value(item: Any, key: str, default: Any = "") -> Any:
-    if isinstance(item, dict):
-        return item.get(key, default)
-    return getattr(item, key, default)
+def _get_value(
+    item: Any,
+    key: str,
+    default: Any = "",
+) -> Any:
+    """Read direct fields and nested RetrievedChunk metadata."""
 
+    if isinstance(item, dict):
+
+        if key in item:
+            return item[key]
+
+        metadata = item.get("meta_data") or {}
+
+        if isinstance(metadata, dict):
+            return metadata.get(key, default)
+
+        return default
+
+    value = getattr(item, key, None)
+
+    if value is not None:
+        return value
+
+    metadata = getattr(item, "meta_data", {}) or {}
+
+    if isinstance(metadata, dict):
+        return metadata.get(key, default)
+
+    return default
 
 def build_evidence_context(
     outcome: dict[str, Any],
@@ -253,8 +278,21 @@ def build_evidence_context(
     for index, chunk in enumerate(chunks, start=1):
         evidence_id = str(_get_value(chunk, "evidence_id", f"UNKNOWN-{index}"))
         document_id = str(_get_value(chunk, "document_id", "unknown"))
-        source_name = str(_get_value(chunk, "source_name", ""))
-        content = str(_get_value(chunk, "content", ""))
+        source_name = str(
+            _get_value(chunk, "source_name", "")
+        )
+        page_no = _get_value(
+            chunk,
+            "page_no",
+            "",
+        )
+        modality = str(
+            _get_value(chunk, "modality", "text")
+            or "text"
+        )
+        content = str(
+            _get_value(chunk, "content", "")
+        )
 
         if not content:
             content = str(_get_value(chunk, "passage_text", ""))
@@ -263,10 +301,12 @@ def build_evidence_context(
             continue
 
         chunk_sections.append(
-            f"[Evidence ID: {evidence_id}]\n"
-            f"[Document ID: {document_id}]\n"
-            f"[Source: {source_name}]\n"
-            f"{content}"
+        f"[Evidence ID: {evidence_id}]\n"
+        f"[Document ID: {document_id}]\n"
+        f"[Source: {source_name}]\n"
+        f"[Page: {page_no or 'not specified'}]\n"
+        f"[Modality: {modality}]\n"
+        f"{content}"
         )
 
     if chunk_sections:

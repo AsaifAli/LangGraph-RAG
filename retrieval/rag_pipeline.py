@@ -67,6 +67,23 @@ DEFAULT_MAX_WEB_SEARCH_CALLS = int(_get_env("MAX_WEB_SEARCH_CALLS", "5"))
 DEFAULT_MAX_SUMMARY_CHUNKS = int(_get_env("MAX_SUMMARY_CHUNKS", "40"))
 DEFAULT_TURN_TIMEOUT_SECONDS = int(_get_env("TURN_TIMEOUT_SECONDS", "180"))
 DEFAULT_FIXTURE_RELATIVE_PATH = _get_env("FIXTURE_PATH", "fixtures/sample_policy_schedule.csv")
+# Optional multimodal ingestion.
+MULTIMODAL_INGEST_ENABLED = (
+    _get_env("MULTIMODAL_INGEST_ENABLED", "false")
+    .strip()
+    .lower()
+    in {"1", "true", "yes", "on"}
+)
+
+VISION_BACKEND = _get_env(
+    "VISION_BACKEND",
+    "openrouter",
+).strip().lower()
+
+MULTIMODAL_MAX_PDF_PAGES = max(
+    1,
+    int(_get_env("MULTIMODAL_MAX_PDF_PAGES", "30")),
+)
 
 # OpenSearch retrieval settings.
 DEFAULT_OPENSEARCH_INDEX = _get_env("OPENSEARCH_INDEX", "evidenceflow_documents")
@@ -277,7 +294,22 @@ def ensure_opensearch_index(client: Any, *, index_name: str) -> None:
             sparse_enabled = False
 
     index_exists = client.indices.exists(index=index_name)
+
     if index_exists:
+
+        # Older indices use dynamic=false. Explicitly add the new
+        # provenance field so modality information is not discarded.
+        client.indices.put_mapping(
+            index=index_name,
+            body={
+                "properties": {
+                    "modality": {
+                        "type": "keyword"
+                    }
+                }
+            },
+        )
+
         if sparse_enabled:
             try:
                 mapping = client.indices.get_mapping(index=index_name)
@@ -302,6 +334,7 @@ def ensure_opensearch_index(client: Any, *, index_name: str) -> None:
             "chunk_id": {"type": "keyword"},
             "chunk_number": {"type": "integer"},
             "page_no": {"type": "integer"},
+            "modality": {"type": "keyword"},
             "thread_id": {"type": "keyword"},
             "person_ids": {"type": "keyword"},
             "org_ids": {"type": "keyword"},
@@ -337,9 +370,18 @@ def ensure_opensearch_index(client: Any, *, index_name: str) -> None:
 
 
 def _flatten_metadata(
-    *, document_id: str, tenant_schema: str, platform_tenant_id: str, source_name: str,
-    chunk_number: int, content: str
+    *,
+    document_id: str,
+    tenant_schema: str,
+    platform_tenant_id: str,
+    source_name: str,
+    chunk_number: int,
+    content: str,
+    page_no: int | None = None,
+    modality: str = "text",
+    section: str | None = None,
 ) -> dict[str, Any]:
+
     return {
         "document_id": document_id,
         "tenant_schema": f"{tenant_schema}_{platform_tenant_id}",
@@ -349,11 +391,15 @@ def _flatten_metadata(
         "chunk_number": chunk_number,
         "title": Path(source_name).stem,
         "heading": "",
-        "section": source_name,
+        "section": section or source_name,
         "keywords": "",
-        "page_no": None,
+        "page_no": page_no,
+        "modality": modality,
         "passage_text": content,
-        "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "created_at": time.strftime(
+            "%Y-%m-%dT%H:%M:%SZ",
+            time.gmtime(),
+        ),
     }
 
 
@@ -371,6 +417,7 @@ def _source_to_chunk(hit: dict[str, Any]) -> RetrievedChunk:
         "chunk_number": chunk_number,
         "section_path": source.get("section") or source.get("source_name", ""),
         "page_no": source.get("page_no"),
+        "modality": source.get("modality", "text"),
         "title": source.get("title", ""),
         "heading": source.get("heading", ""),
         "keywords": source.get("keywords", ""),
@@ -481,20 +528,107 @@ async def ingest_document(
     platform_tenant_id: str = PLATFORM_TENANT_ID,
     document_id: str | None = None,
 ) -> dict:
+    """Extract and index attributable document evidence.
+
+    Supports the existing text-oriented formats plus opt-in
+    image and visual-PDF extraction.
+    """
+
     if document_id is None:
         document_id = str(uuid.uuid4())
 
-    text = extract_text(content, source_name)
-    chunks = chunk_csv_text(text) if source_name.lower().endswith(".csv") else chunk_text(text)
-    if not chunks:
-        return {"document_id": document_id, "chunk_count": 0}
+    from shared.multimodal_extractor import (
+        IMAGE_SUFFIXES,
+        extract_multimodal_sections,
+    )
+
+    suffix = Path(source_name).suffix.lower()
+
+    needs_vision = (
+        suffix == ".pdf"
+        or suffix == ".docx"
+        or suffix in IMAGE_SUFFIXES
+    )
+
+    vision_model = None
+
+    if MULTIMODAL_INGEST_ENABLED and needs_vision:
+
+        vision_model = build_langchain_model(
+            VISION_BACKEND
+        )
+
+    extraction = await extract_multimodal_sections(
+        content,
+        source_name,
+        vision_model=vision_model,
+        multimodal_enabled=MULTIMODAL_INGEST_ENABLED,
+        max_pdf_pages=MULTIMODAL_MAX_PDF_PAGES,
+    )
+
+    # Preserve section/page/modality information through chunking.
+    indexed_chunks: list[
+        tuple[str, int | None, str, str]
+    ] = []
+
+    for section in extraction.sections:
+
+        if suffix == ".csv":
+            section_chunks = chunk_csv_text(
+                section.text
+            )
+        else:
+            section_chunks = chunk_text(
+                section.text
+            )
+
+        for chunk in section_chunks:
+
+            indexed_chunks.append(
+                (
+                    chunk,
+                    section.page_no,
+                    section.modality,
+                    section.section,
+                )
+            )
+
+    if not indexed_chunks:
+
+        return {
+            "document_id": document_id,
+            "chunk_count": 0,
+            "visual_pages_processed": (
+                extraction.visual_pages_processed
+            ),
+            "visual_pages_skipped": (
+                extraction.visual_pages_skipped
+            ),
+            "modalities": [],
+        }
 
     client = build_opensearch_client()
-    index_name = opensearch_index_name(tenant_schema, platform_tenant_id)
-    await _to_thread_with_retry(ensure_opensearch_index, client, index_name=index_name)
+
+    index_name = opensearch_index_name(
+        tenant_schema,
+        platform_tenant_id,
+    )
+
+    await _to_thread_with_retry(
+        ensure_opensearch_index,
+        client,
+        index_name=index_name,
+    )
 
     actions = []
-    for i, chunk in enumerate(chunks, start=1):
+
+    for i, (
+        chunk,
+        page_no,
+        modality,
+        section_label,
+    ) in enumerate(indexed_chunks, start=1):
+
         doc = _flatten_metadata(
             document_id=document_id,
             tenant_schema=tenant_schema,
@@ -502,18 +636,59 @@ async def ingest_document(
             source_name=source_name,
             chunk_number=i,
             content=chunk,
+            page_no=page_no,
+            modality=modality,
+            section=section_label,
         )
-        actions.append({"index": {"_index": index_name, "_id": f"{document_id}:{i}"}})
+
+        actions.append(
+            {
+                "index": {
+                    "_index": index_name,
+                    "_id": f"{document_id}:{i}",
+                }
+            }
+        )
+
         actions.append(doc)
 
     def _bulk() -> Any:
-        return client.bulk(body=actions, refresh="wait_for")
+        return client.bulk(
+            body=actions,
+            refresh="wait_for",
+        )
 
     response = await _to_thread_with_retry(_bulk)
+
     if response.get("errors"):
-        failures = [item for item in response.get("items", []) if item.get("index", {}).get("error")]
-        raise RuntimeError(f"OpenSearch ingestion failed for {len(failures)} chunks: {failures[:2]}")
-    return {"document_id": document_id, "chunk_count": len(chunks)}
+
+        failures = [
+            item
+            for item in response.get("items", [])
+            if item.get("index", {}).get("error")
+        ]
+
+        raise RuntimeError(
+            f"OpenSearch ingestion failed for "
+            f"{len(failures)} chunks: {failures[:2]}"
+        )
+
+    return {
+        "document_id": document_id,
+        "chunk_count": len(indexed_chunks),
+        "visual_pages_processed": (
+            extraction.visual_pages_processed
+        ),
+        "visual_pages_skipped": (
+            extraction.visual_pages_skipped
+        ),
+        "modalities": sorted(
+            {
+                item[2]
+                for item in indexed_chunks
+            }
+        ),
+    }
 
 
 _RERANK_ENCODER_CACHE: dict[str, Any] = {}

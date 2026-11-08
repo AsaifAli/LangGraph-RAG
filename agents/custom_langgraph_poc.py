@@ -1182,33 +1182,26 @@ async def run_langgraph_turn(built: dict[str, Any], query: str, *, thread_id: st
 
 
 async def astream_langgraph_turn(
-    built: dict[str, Any], query: str, *, thread_id: str
+    built: dict[str, Any],
+    query: str,
+    *,
+    thread_id: str,
 ) -> AsyncIterator[dict[str, Any]]:
-    """Streaming variant of `run_langgraph_turn`, matching the deepagents
-    version's event shape (`status`/`token`/`final`) so `streamlit_app.py`
-    needs no changes to its event-consumption loop. `plan_update`/
-    `subagent_start`/`subagent_end` events are not emitted mid-run (this
-    graph has no dynamic planning, and its "delegations" — the parallel
-    chunk analyses — complete before the token stream begins, unlike
-    deepagents' interleaved tool-call events) — the final `delegations` list
-    still arrives in the terminal `final` event, so the UI's delegation
-    expander still renders, just populated once at the end rather than live.
+    """Stream status, tokens and one final graph outcome.
 
-    Token filtering: `route`, `analyze_chunk` (fired in parallel per chunk),
-    and `synthesize` all call the model — without filtering, their
-    `on_chat_model_stream` deltas would interleave into garbled text. Every
-    event's `metadata["langgraph_node"]` names the node currently executing
-    (verified directly against the installed `langgraph` source — see
-    module docstring); only `synthesize`'s and `route`'s tokens are streamed
-    to the UI — `route`'s call also produces the final answer directly when
-    it decides no tool is needed (see `route`'s own docstring comment), and
-    its content is empty/near-empty on the tool-calling turns (models
-    typically emit tool_calls without accompanying prose), so including it
-    doesn't leak anything in the KB/web-routed case.
+    Only route and synthesis model tokens are forwarded to the UI.
+    The graph is invoked exactly once per function invocation.
     """
+
     preflight = validate_query(query)
+
     if preflight:
-        yield {"type": "status", "text": "🛡️ Request blocked by safety guardrail"}
+
+        yield {
+            "type": "status",
+            "text": "🛡️ Request blocked by safety guardrail",
+        }
+
         yield {
             "type": "final",
             "final_answer": preflight.message,
@@ -1219,80 +1212,157 @@ async def astream_langgraph_turn(
             "grounding_status": "NOT_APPLICABLE",
             "abstained": True,
             "abstention_reason": "INPUT_GUARDRAIL",
-            "quality": {"quality_label": "BLOCKED"},
-            "guardrail_findings": [preflight.as_dict()],
-            "trust": {"label": "BLOCKED", "security_blocked": True, "finding_count": 1, "proposed_count": 0, "verified_count": 0},
-            "web_sources": [], "used_web_sources": False,
-            "plan": [], "delegations": [], "token_usage": {},
+            "quality": {
+                "quality_label": "BLOCKED",
+            },
+            "guardrail_findings": [
+                preflight.as_dict()
+            ],
+            "trust": {
+                "label": "BLOCKED",
+                "security_blocked": True,
+                "finding_count": 1,
+                "proposed_count": 0,
+                "verified_count": 0,
+            },
+            "web_sources": [],
+            "used_web_sources": False,
+            "plan": [],
+            "delegations": [],
+            "token_usage": {},
         }
+
         return
 
     agent = built["agent"]
+
     if built.get("web_search_tool") is not None:
         built["web_search_tool"].set_rehydration_context()
-    token_tracker = make_token_tracker()
-    config = {"configurable": {"thread_id": thread_id}, "callbacks": [token_tracker]}
 
-    _STATUS_LABELS = {
+    token_tracker = make_token_tracker()
+
+    config = {
+        "configurable": {
+            "thread_id": thread_id,
+        },
+        "callbacks": [
+            token_tracker,
+        ],
+    }
+
+    STATUS_LABELS = {
         "retrieve_kb": "🔍 Searching the knowledge base",
         "analyze_chunk": "📖 Analyzing a retrieved chunk",
         "summarize_document": "📑 Rolling up findings per document",
         "research_web": "🌐 Searching the web",
-        "research_primary_source": "🏛️ Querying primary-source data via MCP",
+        "research_primary_source": (
+            "🏛️ Querying primary-source data via MCP"
+        ),
         "synthesize": "✍️ Synthesizing the answer",
     }
-    _STREAM_NODES = {"synthesize", "route"}
+
+    STREAM_NODES = {
+        "synthesize",
+        "route",
+    }
+
     seen_status: set[str] = set()
+
     root_run_id: str | None = None
+
     final_state: dict[str, Any] | None = None
 
-    async for event in agent.astream_events(_turn_input(built, query), config=config, version="v2"):
-        kind = event.get("event")
-        name = event.get("name", "")
-        node = (event.get("metadata") or {}).get("langgraph_node")
+    # The graph is executed once. Capture its root output while
+    # forwarding appropriate status and token events.
+    async for event in agent.astream_events(
+        _turn_input(built, query),
+        config=config,
+        version="v2",
+    ):
 
-        if kind == "on_chain_start" and not event.get("parent_ids"):
+        kind = event.get("event")
+
+        name = event.get("name", "")
+
+        node = (
+            event.get("metadata") or {}
+        ).get("langgraph_node")
+
+        # Identify the outermost LangGraph execution.
+        if (
+            kind == "on_chain_start"
+            and not event.get("parent_ids")
+        ):
             root_run_id = event.get("run_id")
+
+        # Capture the final state from that same execution.
         elif (
             kind == "on_chain_end"
             and root_run_id is not None
             and event.get("run_id") == root_run_id
         ):
-            output = (event.get("data") or {}).get("output")
+
+            output = (
+                event.get("data") or {}
+            ).get("output")
+
             if isinstance(output, dict):
                 final_state = output
 
-        if kind == "on_chain_start" and name in _STATUS_LABELS and name not in seen_status:
+        # Emit each status once.
+        if (
+            kind == "on_chain_start"
+            and name in STATUS_LABELS
+            and name not in seen_status
+        ):
+
             seen_status.add(name)
-            yield {"type": "status", "text": f"{_STATUS_LABELS[name]}..."}
-        elif kind == "on_chat_model_stream" and node in _STREAM_NODES:
-            delta = content_to_text(getattr(event["data"]["chunk"], "content", None))
+
+            yield {
+                "type": "status",
+                "text": f"{STATUS_LABELS[name]}...",
+            }
+
+        # Only stream route/synthesis output.
+        elif (
+            kind == "on_chat_model_stream"
+            and node in STREAM_NODES
+        ):
+
+            delta = content_to_text(
+                getattr(
+                    event["data"]["chunk"],
+                    "content",
+                    None,
+                )
+            )
+
             if delta:
-                yield {"type": "token", "text": delta}
+
+                yield {
+                    "type": "token",
+                    "text": delta,
+                }
 
     if final_state is None:
-        raise RuntimeError("Streaming completed without receiving the final graph state.")
 
-    outcome = _finalize_outcome(final_state, token_tracker, built["web_search_tool"])
+        raise RuntimeError(
+            "Streaming completed without receiving "
+            "the final graph state."
+        )
+
+    outcome = _finalize_outcome(
+        final_state,
+        token_tracker,
+        built["web_search_tool"],
+    )
+
     outcome["type"] = "final"
+
     yield outcome
 
-    async for event in agent.astream_events(_turn_input(built, query), config=config, version="v2"):
-        kind = event.get("event")
-        name = event.get("name", "")
-        node = (event.get("metadata") or {}).get("langgraph_node")
-        if kind == "on_chain_start" and name in _STATUS_LABELS and name not in seen_status:
-            seen_status.add(name)
-            yield {"type": "status", "text": f"{_STATUS_LABELS[name]}..."}
-        elif kind == "on_chat_model_stream" and node in _STREAM_NODES:
-            delta = content_to_text(getattr(event["data"]["chunk"], "content", None))
-            if delta:
-                yield {"type": "token", "text": delta}
-
-    state = await agent.aget_state(config)
-    outcome = _finalize_outcome(state.values, token_tracker, built["web_search_tool"])
-    outcome["type"] = "final"
-    yield outcome
+    # Critical: do not execute the graph a second time.
+    return
 
 
 async def run_custom_langgraph(

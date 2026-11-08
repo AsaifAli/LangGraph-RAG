@@ -42,3 +42,5 @@ setuptools>=75
 
 # Optional primary-source MCP client
 mcp>=2,<3
+PyMuPDF>=1.24,<2
+Pillow>=10,<13

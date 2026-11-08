@@ -1667,9 +1667,23 @@ with st.sidebar:
     )
     st.caption("Uploaded here: available from every chat, survives deleting chats.")
     sidebar_file = st.file_uploader(
-        "Upload a .txt/.md/.csv/.pdf/.docx document",
-        type=["txt", "md", "csv", "pdf", "docx", "doc"],
-        key=f"sidebar_uploader_{st.session_state.sidebar_uploader_key}",
+    "Upload text, PDF, Word, or image evidence",
+    type=[
+        "txt",
+        "md",
+        "csv",
+        "pdf",
+        "docx",
+        "doc",
+        "png",
+        "jpg",
+        "jpeg",
+        "webp",
+        "bmp",
+        "tif",
+        "tiff",
+    ],
+    key=f"sidebar_uploader_{st.session_state.sidebar_uploader_key}",
     )
     # Auto-ingests on selection, no separate confirm click — matches the
     # chat-input attach path, which was already automatic; the extra button
@@ -2137,7 +2151,21 @@ with _main_col:
     user_input = st.chat_input(
         "Message the assistant, or attach a document to add it to the knowledge base...",
         accept_file="multiple",
-        file_type=["txt", "md", "csv", "pdf", "docx", "doc"],
+        file_type=[
+        "txt",
+        "md",
+        "csv",
+        "pdf",
+        "docx",
+        "doc",
+        "png",
+        "jpg",
+        "jpeg",
+        "webp",
+        "bmp",
+        "tif",
+        "tiff",
+    ],
     )
 
     # A "Regenerate" click on the last message (see the history loop above)
