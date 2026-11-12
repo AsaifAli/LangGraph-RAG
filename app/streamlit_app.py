@@ -106,6 +106,7 @@ _HERE = Path(__file__).resolve().parent
 _POC_ROOT = _HERE.parent
 if str(_POC_ROOT) not in sys.path:
     sys.path.insert(0, str(_POC_ROOT))
+from app.demo_onboarding import render_demo_onboarding  # noqa: E402
 
 from sidebar_toggle import render_sidebar_toggle  # noqa: E402
 from agents.multi_agent_orchestrator import astream_langgraph_turn, build_langgraph_agent
@@ -164,7 +165,7 @@ def _icon(name: str, *, size: int = 20, color: str = "currentColor") -> str:
 # than a raw exception on page load.
 _ROBOT_ICON_PATH = _ICONS_DIR / "robot.svg"
 st.set_page_config(
-    page_title="Document Research Assistant",
+    page_title="EvidenceFlow | Verified RAG & Research",
     page_icon=str(_ROBOT_ICON_PATH) if _ROBOT_ICON_PATH.exists() else "🤖",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -632,6 +633,62 @@ _APP_CSS = """
     .ef-evidence-stat span { color:var(--ef-muted);font-size:.62rem; }
     .ef-trace { border-left:2px solid color-mix(in srgb,var(--ef-accent) 30%,var(--ef-border));padding-left:.7rem; }
     .ef-trace-step { padding:.28rem 0;color:var(--ef-text-2);font-size:.72rem; }
+    .ef-trace-agent,
+    .ef-trace-audit {
+        padding: .68rem .72rem;
+        margin: .5rem 0;
+        border: 1px solid var(--ef-border);
+        border-radius: 12px;
+        background: var(--ef-surface-2);
+    }
+
+    .ef-trace-agent-head {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: .5rem;
+        flex-wrap: wrap;
+    }
+
+    .ef-trace-agent-head strong {
+        color: var(--ef-text);
+        font-size: .73rem;
+    }
+
+    .ef-trace-state {
+        display: inline-flex;
+        padding: .2rem .45rem;
+        border-radius: 999px;
+        font-size: .61rem;
+        font-weight: 800;
+        border: 1px solid var(--ef-border);
+    }
+
+    .ef-trace-state.done {
+        color: #10b981;
+        border-color: rgba(16,185,129,.28);
+        background: rgba(16,185,129,.06);
+    }
+
+    .ef-trace-state.review {
+        color: #d97706;
+        border-color: rgba(217,119,6,.28);
+        background: rgba(217,119,6,.07);
+    }
+
+    .ef-trace-state.neutral {
+        color: var(--ef-muted);
+        background: var(--ef-surface);
+    }
+
+    .ef-trace-audit {
+        margin-top: .85rem;
+        border-color: color-mix(
+            in srgb,
+            var(--ef-accent) 30%,
+            var(--ef-border)
+        );
+    }
     .ef-trace-step::before { content:'✓';color:#10b981;font-weight:800;margin-right:.45rem; }
     .ef-evidence-card { transition:transform .16s ease,border-color .16s ease,box-shadow .16s ease; }
     .ef-evidence-card:hover { transform:translateY(-1px);border-color:color-mix(in srgb,var(--ef-accent) 36%,var(--ef-border)); }
@@ -1215,6 +1272,8 @@ def _meta_from_outcome(outcome: dict) -> dict:
         "used_primary_source": outcome.get("used_primary_source", False),
         "primary_source": outcome.get("primary_source", {}),
         "plan": outcome.get("plan", []),
+        "agent_trace": outcome.get("agent_trace", []),
+        "evidence_audit": outcome.get("evidence_audit", {}),
     }
 
 
@@ -1390,6 +1449,8 @@ def _render_answer_summary(meta: dict, *, idx: int, is_latest: bool) -> None:
     conflicts = quality.get("evidence_conflicts") or []
     trust = meta.get("trust") or {}
     guardrail_findings = meta.get("guardrail_findings") or []
+    audit = meta.get("evidence_audit") or {}
+    audit_decision = str(audit.get("decision") or "").upper()
 
     if meta.get("abstained") or grounding.lower() in {"abstained", "blocked", "failed"} or trust.get("label") in {"BLOCKED", "REVIEW", "UNVERIFIED"}:
         dot_class = "warn"
@@ -1425,7 +1486,26 @@ def _render_answer_summary(meta: dict, *, idx: int, is_latest: bool) -> None:
         metrics.append('<span class="ef-answer-metric"><strong>blocked</strong> safety check</span>')
     elif guardrail_findings:
         metrics.append(f'<span class="ef-answer-metric"><strong>{len(guardrail_findings)}</strong> safety finding{"s" if len(guardrail_findings) != 1 else ""}</span>')
-
+    if audit_decision == "PASS":
+        metrics.append(
+            '<span class="ef-answer-metric">'
+            '<strong>PASS</strong> independent audit</span>'
+        )
+    elif audit_decision in {"ABSTAIN", "ERROR"}:
+        metrics.append(
+            '<span class="ef-answer-metric">'
+            '<strong>Review</strong> independent audit</span>'
+        )
+    elif audit_decision == "SKIPPED":
+        metrics.append(
+            '<span class="ef-answer-metric">'
+            '<strong>Skipped</strong> independent audit</span>'
+        )
+    elif audit_decision == "DISABLED":
+        metrics.append(
+            '<span class="ef-answer-metric">'
+            '<strong>Disabled</strong> independent audit</span>'
+        )
     st.markdown(
         f'''<div class="ef-answer-summary">
               <div class="ef-answer-summary-main">
@@ -1452,6 +1532,19 @@ def _render_answer_summary(meta: dict, *, idx: int, is_latest: bool) -> None:
             st.warning("A safety guardrail blocked this response before it could be returned.", icon="🛡️")
         else:
             st.info("Some retrieved content was flagged as untrusted and treated as evidence only — its instructions were not executed.", icon="🛡️")
+
+        if audit_decision in {"ABSTAIN", "ERROR"}:
+            issues = audit.get("issues") or []
+            st.warning(
+                "Independent evidence review requires attention. "
+                + (" ".join(str(issue) for issue in issues[:3])
+                if issues else "The auditor could not verify the material claims."),
+                icon="🛡️",
+            )
+        elif audit_decision == "SKIPPED":
+            reason = audit.get("reason")
+            if reason:
+                st.caption(f"Independent audit not run: {reason}")
 
     if is_latest and (kb_count or web_count or primary_used):
         if st.button(
@@ -1846,6 +1939,19 @@ def _latest_meta() -> dict | None:
         None,
     )
 
+def _chunk_value(chunk, key: str, default=None):
+    """Read chunk fields from either RetrievedChunk objects or saved dictionaries."""
+    if isinstance(chunk, dict):
+        value = chunk.get(key)
+        metadata = chunk.get("meta_data") or chunk.get("metadata") or {}
+    else:
+        value = getattr(chunk, key, None)
+        metadata = getattr(chunk, "meta_data", None) or {}
+
+    if value is None and isinstance(metadata, dict):
+        value = metadata.get(key)
+
+    return default if value is None else value
 
 def _evidence_registry_for_meta(meta: dict) -> dict:
     chunks = meta.get("chunks") or []
@@ -1872,25 +1978,29 @@ def _route_summary(meta: dict | None) -> str:
     return " + ".join(parts) if parts else "No external source route"
 
 
+
 def _render_evidence_panel() -> None:
     meta = _latest_meta()
     if not meta or not st.session_state.get("evidence_open", False):
         return
 
     st.markdown('<div class="ef-evidence-open"></div>', unsafe_allow_html=True)
+
     header_col, close_col = st.columns([8, 1])
 
     with header_col:
         st.markdown(
-            '<div class="ef-evidence-title">Verified evidence</div>',
+            '<div class="ef-evidence-title">Evidence workspace</div>',
             unsafe_allow_html=True,
         )
         grounding = meta.get("grounding_status") or (
             "Abstained" if meta.get("abstained") else "Grounded"
         )
         st.markdown(
-            f'<div class="ef-evidence-sub">Claim → evidence → source · '
-            f'<strong>{html_lib.escape(str(grounding))}</strong></div>',
+            f'<div class="ef-evidence-sub">'
+            f'Claim → evidence → source · '
+            f'<strong>{html_lib.escape(str(grounding))}</strong>'
+            f'</div>',
             unsafe_allow_html=True,
         )
 
@@ -1905,65 +2015,426 @@ def _render_evidence_panel() -> None:
             st.session_state.evidence_open = False
             st.rerun()
 
-    cited=set(meta.get("cited_evidence_ids") or [])
-    chunks=[c for c in (meta.get("chunks") or []) if not cited or getattr(c,"evidence_id",None) in cited]
-    web_sources=meta.get("web_sources") or []
-    quality=meta.get("quality") or {}
-    coverage=quality.get("citation_coverage")
-    verified_count=meta.get("verified_count")
-    proposed_count=meta.get("proposed_count")
-    if coverage is not None:
-        try: cov=f"{float(coverage):.0%}"
-        except (TypeError,ValueError): cov="—"
-    else: cov=str(verified_count if verified_count is not None else 0)
-    stats=[(str(len(chunks)),"cited passages"),(str(len(web_sources)),"web sources"),(cov,"coverage")]
-    st.markdown('<div class="ef-evidence-summary">'+''.join(f'<div class="ef-evidence-stat"><strong>{html_lib.escape(v)}</strong><span>{html_lib.escape(lbl)}</span></div>' for v,lbl in stats)+'</div>',unsafe_allow_html=True)
+    cited = set(meta.get("cited_evidence_ids") or [])
+    chunks = [
+        c for c in (meta.get("chunks") or [])
+        if not cited or _chunk_value(c, "evidence_id") in cited
+    ]
+    web_sources = meta.get("web_sources") or []
+    quality = meta.get("quality") or {}
+    coverage = quality.get("citation_coverage")
 
-    tab_evidence,tab_sources,tab_trace=st.tabs(["Evidence","Sources","Trace"])
+    verified_count = meta.get("verified_count")
+    proposed_count = meta.get("proposed_count")
+
+    if coverage is not None:
+        try:
+            coverage_label = (
+                f"{float(coverage):.0%}"
+                if float(coverage) <= 1
+                else f"{float(coverage):.0f}%"
+            )
+        except (TypeError, ValueError):
+            coverage_label = "—"
+    else:
+        coverage_label = "—"
+
+    stats = [
+        (str(len(chunks)), "cited passages"),
+        (str(len(web_sources)), "web sources"),
+        (coverage_label, "citation coverage"),
+    ]
+
+    stats_html = "".join(
+        '<div class="ef-evidence-stat">'
+        f'<strong>{html_lib.escape(value)}</strong>'
+        f'<span>{html_lib.escape(label)}</span>'
+        '</div>'
+        for value, label in stats
+    )
+    st.markdown(
+        f'<div class="ef-evidence-summary">{stats_html}</div>',
+        unsafe_allow_html=True,
+    )
+
+    tab_evidence, tab_sources, tab_trace = st.tabs(
+        ["Evidence", "Sources", "Execution trace"]
+    )
+
+    # ---------------------------------------------------------------
+    # Evidence: individual cited passages and their provenance.
+    # ---------------------------------------------------------------
     with tab_evidence:
         if not chunks:
-            st.info("No knowledge-base evidence was cited in the latest answer.")
-        for idx,c in enumerate(chunks[:8]):
-            eid=getattr(c,"evidence_id",None) or f"E{idx+1}"
-            content=str(getattr(c,"content","") or "").strip()
-            selected=st.session_state.get("selected_evidence_id")==eid
-            check=st.session_state.get("evidence_checks",{}).get(eid)
-            badge="Verified" if (check or {}).get("status")=="verified" else ("Needs review" if check else "Backend verified")
-            doc_id=str(getattr(c,"document_id","") or "")
-            st.markdown(f'<div class="ef-evidence-card {"selected" if selected else ""}"><strong>{html_lib.escape(eid)}</strong><p>{html_lib.escape(content[:420])}{"…" if len(content)>420 else ""}</p><span class="ef-evidence-badge">{html_lib.escape(badge)}</span><div class="ef-evidence-source">{html_lib.escape(doc_id or "Source passage")}</div></div>',unsafe_allow_html=True)
-            if st.button("Inspect passage",key=f"inspect-evidence-{eid}",use_container_width=True):
-                st.session_state.selected_evidence_id=eid; st.rerun()
-            if selected:
-                st.caption(f"Evidence {eid} · retrieval score: {getattr(c,'score',0.0):.3f}")
-                st.markdown(content)
-        if quality.get("evidence_conflicts"):
-            st.warning("Potential evidence conflict detected. The agent has flagged this for review; inspect the cited passages below for the supporting context.")
-        if meta.get("abstained"):
-            st.error("The answer was withheld because sufficient verified evidence was not available.")
+            st.info("No knowledge-base evidence was cited in this answer.")
 
+        document_names = _document_names_in_scope()
+
+        for idx, chunk in enumerate(chunks[:8]):
+            evidence_id = str(
+                _chunk_value(chunk, "evidence_id") or f"E{idx + 1}"
+            )
+            document_id = str(
+                _chunk_value(chunk, "document_id") or ""
+            )
+            content = str(
+                _chunk_value(chunk, "content") or ""
+            ).strip()
+
+            source_name = (
+                document_names.get(document_id)
+                or _chunk_value(chunk, "source_name")
+                or (
+                    f"Document {document_id[:10]}"
+                    if document_id
+                    else "Source passage"
+                )
+            )
+
+            page_no = _chunk_value(chunk, "page_no")
+            section = _chunk_value(chunk, "section_path")
+            chunk_number = _chunk_value(chunk, "chunk_number")
+            score = _chunk_value(chunk, "score")
+
+            selected = (
+                st.session_state.get("selected_evidence_id")
+                == evidence_id
+            )
+
+            check = st.session_state.get(
+                "evidence_checks", {}
+            ).get(evidence_id)
+
+            if (check or {}).get("status") == "verified":
+                badge = "Locally verified"
+            elif check:
+                badge = "Needs review"
+            else:
+                badge = "Cited evidence"
+
+            provenance = []
+
+            if page_no is not None:
+                provenance.append(f"Page {page_no}")
+
+            if section:
+                provenance.append(f"Section: {section}")
+
+            if chunk_number is not None:
+                provenance.append(f"Chunk {chunk_number}")
+
+            provenance_text = " · ".join(provenance)
+
+            card_html = (
+                f'<div class="ef-evidence-card {"selected" if selected else ""}">'
+                f'<strong>{html_lib.escape(evidence_id)}</strong>'
+                f'<div class="ef-evidence-source">'
+                f'{html_lib.escape(str(source_name))}'
+                f'</div>'
+                f'<p>{html_lib.escape(content[:420])}'
+                f'{"…" if len(content) > 420 else ""}</p>'
+                f'<span class="ef-evidence-badge">'
+                f'{html_lib.escape(badge)}</span>'
+                f'<div class="ef-evidence-source">'
+                f'{html_lib.escape(provenance_text)}'
+                f'</div>'
+                f'</div>'
+            )
+
+            st.markdown(card_html, unsafe_allow_html=True)
+
+            if st.button(
+                "Inspect full passage",
+                key=f"inspect-evidence-{evidence_id}",
+                use_container_width=True,
+            ):
+                st.session_state.selected_evidence_id = evidence_id
+                st.rerun()
+
+            if selected:
+                try:
+                    score_label = (
+                        f"{float(score):.3f}"
+                        if score is not None
+                        else "Unavailable"
+                    )
+                except (TypeError, ValueError):
+                    score_label = "Unavailable"
+
+                st.caption(
+                    f"Evidence {evidence_id} · "
+                    f"Retrieval score: {score_label}"
+                )
+                st.markdown(content)
+
+        if quality.get("evidence_conflicts"):
+            st.warning(
+                "Potential evidence conflicts were detected. "
+                "Inspect the cited passages before relying on the affected claims."
+            )
+
+        if meta.get("abstained"):
+            st.error(
+                "The answer was withheld because sufficient verified "
+                "evidence was not available."
+            )
+
+    # ---------------------------------------------------------------
+    # Sources: group knowledge-base citations by original document.
+    # ---------------------------------------------------------------
     with tab_sources:
-        if chunks:
-            st.markdown("**Knowledge-base sources**")
-            for idx,c in enumerate(chunks[:8]):
-                doc_id=str(getattr(c,"document_id","") or f"Document {idx+1}")
-                eid=str(getattr(c,"evidence_id",None) or f"E{idx+1}")
-                st.markdown(f'<div class="ef-evidence-card"><strong>{html_lib.escape(doc_id)}</strong><div class="ef-evidence-source">Referenced by {html_lib.escape(eid)}</div></div>',unsafe_allow_html=True)
+        source_groups = {}
+        document_names = _document_names_in_scope()
+
+        for idx, chunk in enumerate(chunks):
+            document_id = str(
+                _chunk_value(chunk, "document_id") or ""
+            )
+            group_key = document_id or f"unknown-{idx}"
+
+            source_name = (
+                document_names.get(document_id)
+                or _chunk_value(chunk, "source_name")
+                or (
+                    f"Document {document_id[:10]}"
+                    if document_id
+                    else f"Source {idx + 1}"
+                )
+            )
+
+            if group_key not in source_groups:
+                source_groups[group_key] = {
+                    "name": str(source_name),
+                    "evidence_ids": [],
+                    "pages": [],
+                    "sections": [],
+                }
+
+            evidence_id = _chunk_value(chunk, "evidence_id")
+            if evidence_id:
+                source_groups[group_key]["evidence_ids"].append(
+                    str(evidence_id)
+                )
+
+            page_no = _chunk_value(chunk, "page_no")
+            if page_no is not None:
+                source_groups[group_key]["pages"].append(str(page_no))
+
+            section = _chunk_value(chunk, "section_path")
+            if section:
+                source_groups[group_key]["sections"].append(str(section))
+
+        if source_groups:
+            st.markdown("**Knowledge-base documents**")
+            st.caption(
+                f"{len(source_groups)} source documents · "
+                f"{len(chunks)} cited passages"
+            )
+
+            for group in source_groups.values():
+                evidence_labels = ", ".join(
+                    dict.fromkeys(group["evidence_ids"])
+                )
+                pages = ", ".join(
+                    dict.fromkeys(group["pages"])
+                )
+                sections = ", ".join(
+                    dict.fromkeys(group["sections"])
+                )
+
+                details = [
+                    f"Evidence: {evidence_labels}"
+                ]
+
+                if pages:
+                    details.append(f"Pages: {pages}")
+
+                if sections:
+                    details.append(f"Sections: {sections}")
+
+                st.markdown(
+                    '<div class="ef-evidence-card">'
+                    f'<strong>{html_lib.escape(group["name"])}</strong>'
+                    f'<div class="ef-evidence-source">'
+                    f'{html_lib.escape(" · ".join(details))}'
+                    f'</div>'
+                    '</div>',
+                    unsafe_allow_html=True,
+                )
+
         if web_sources:
             st.markdown("**Web sources**")
-            for idx,src in enumerate(web_sources[:6]):
-                title=str(src.get("title") or src.get("url") or f"Web source {idx+1}"); url=str(src.get("url") or "")
-                st.markdown(f'<div class="ef-evidence-card"><strong>WEB {idx+1}</strong><p>{html_lib.escape(title)}</p></div>',unsafe_allow_html=True)
-                if url: st.link_button("Open source ↗",url,use_container_width=True)
-        if not chunks and not web_sources: st.info("No source records are available for this turn.")
 
+            for idx, source in enumerate(web_sources[:8]):
+                title = str(
+                    source.get("title")
+                    or source.get("url")
+                    or f"Web source {idx + 1}"
+                )
+                url = str(source.get("url") or "")
+
+                st.markdown(
+                    '<div class="ef-evidence-card">'
+                    f'<strong>WEB {idx + 1}</strong>'
+                    f'<p>{html_lib.escape(title)}</p>'
+                    '</div>',
+                    unsafe_allow_html=True,
+                )
+
+                if url:
+                    st.link_button(
+                        "Open source ↗",
+                        url,
+                        use_container_width=True,
+                    )
+
+        if not source_groups and not web_sources:
+            st.info("No source records are available for this turn.")
+
+    # ---------------------------------------------------------------
+    # Trace: real agent records and the independent audit decision.
+    # ---------------------------------------------------------------
     with tab_trace:
-        st.markdown("<div class='ef-trace'>",unsafe_allow_html=True)
-        route=_route_summary(meta)
-        steps=[f"Route selected: {route}",f"Retrieved {len(meta.get('chunks') or [])} candidate passages",f"Cited passages: {len(chunks)}",f"Verification: {meta.get('grounding_status') or ('Abstained' if meta.get('abstained') else 'Grounded')}",f"Web research: {'used' if meta.get('used_web') else 'not used'}"]
-        for step in steps: st.markdown(f'<div class="ef-trace-step">{html_lib.escape(step)}</div>',unsafe_allow_html=True)
-        st.markdown("</div>",unsafe_allow_html=True)
-        if verified_count is not None or proposed_count is not None: st.caption(f"{verified_count or 0} verified / {proposed_count or 0} proposed evidence references")
+        route = _route_summary(meta)
 
+        trace_steps = [
+            f"Research route: {route}",
+            f"Retrieved candidates: {len(meta.get('chunks') or [])}",
+            f"Cited passages: {len(chunks)}",
+            (
+                "Grounding: "
+                + str(meta.get("grounding_status") or (
+                    "Abstained" if meta.get("abstained") else "Grounded"
+                ))
+            ),
+            (
+                "Web research: "
+                + ("used" if meta.get("used_web") else "not used")
+            ),
+        ]
+
+        st.markdown('<div class="ef-trace">', unsafe_allow_html=True)
+
+        for step in trace_steps:
+            st.markdown(
+                '<div class="ef-trace-step">'
+                f'{html_lib.escape(step)}'
+                '</div>',
+                unsafe_allow_html=True,
+            )
+
+        st.markdown("</div>", unsafe_allow_html=True)
+
+        if verified_count is not None or proposed_count is not None:
+            st.caption(
+                f"{verified_count or 0} verified / "
+                f"{proposed_count or 0} proposed evidence references"
+            )
+
+        agent_trace = meta.get("agent_trace") or []
+
+        st.markdown("**Agent execution**")
+
+        if agent_trace:
+            for record in agent_trace:
+                if not isinstance(record, dict):
+                    continue
+
+                agent_name = str(record.get("agent") or "Research agent")
+                responsibility = str(
+                    record.get("responsibility") or ""
+                )
+                raw_status = str(
+                    record.get("status") or "unknown"
+                ).lower()
+
+                if raw_status == "completed":
+                    status_label = "Completed"
+                    status_class = "done"
+                elif raw_status == "review_required":
+                    status_label = "Review required"
+                    status_class = "review"
+                else:
+                    status_label = raw_status.replace("_", " ").title()
+                    status_class = "neutral"
+
+                st.markdown(
+                    '<div class="ef-trace-agent">'
+                    '<div class="ef-trace-agent-head">'
+                    f'<strong>{html_lib.escape(agent_name)}</strong>'
+                    f'<span class="ef-trace-state {status_class}">'
+                    f'{html_lib.escape(status_label)}'
+                    '</span>'
+                    '</div>'
+                    f'<div class="ef-evidence-source">'
+                    f'{html_lib.escape(responsibility)}'
+                    '</div>'
+                    '</div>',
+                    unsafe_allow_html=True,
+                )
+        else:
+            st.info(
+                "Agent execution records are not available for this saved turn."
+            )
+
+        audit = meta.get("evidence_audit") or {}
+        if audit:
+            decision = str(
+                audit.get("decision") or "UNKNOWN"
+            ).upper()
+
+            audit_classes = {
+                "PASS": "done",
+                "ABSTAIN": "review",
+                "ERROR": "review",
+                "SKIPPED": "neutral",
+                "DISABLED": "neutral",
+            }
+            audit_class = audit_classes.get(decision, "neutral")
+
+            audit_detail = ""
+
+            issues = audit.get("issues") or []
+            if isinstance(issues, str):
+                issues = [issues]
+
+            if decision == "PASS":
+                audit_detail = (
+                    "Independent review passed. No material evidence "
+                    "problem was detected."
+                )
+            elif decision in {"ABSTAIN", "ERROR"}:
+                audit_detail = " ".join(
+                    str(issue) for issue in issues[:3]
+                ) or "The independent review could not verify the material claims."
+            elif decision == "SKIPPED":
+                audit_detail = str(
+                    audit.get("reason")
+                    or "The audit was not required for this turn."
+                )
+            elif decision == "DISABLED":
+                audit_detail = "The independent auditor is disabled."
+            else:
+                audit_detail = "No further audit explanation is available."
+
+            st.markdown(
+                '<div class="ef-trace-audit">'
+                '<div class="ef-trace-agent-head">'
+                '<strong>Independent Evidence Auditor</strong>'
+                f'<span class="ef-trace-state {audit_class}">'
+                f'{html_lib.escape(decision)}'
+                '</span>'
+                '</div>'
+                f'<div class="ef-evidence-source">'
+                f'{html_lib.escape(audit_detail)}'
+                '</div>'
+                '</div>',
+                unsafe_allow_html=True,
+            )
+        else:
+            st.info(
+                "Independent audit metadata is not available for this turn."
+            )
 
 # Main workspace + conditional evidence workspace. The app's left sidebar remains
 # the navigation/document control plane; this area is the product workspace.
@@ -2007,7 +2478,7 @@ with _main_col:
                   <div class="ef-landing-sub">EvidenceFlow routes each question across your knowledge base, the web, and trusted primary sources, then carries evidence verification into the final answer.</div>
                   <div class="ef-landing-pills">
                     <span class="ef-landing-pill"><i></i>Agentic routing</span>
-                    <span class="ef-landing-pill"><i></i>Lexical + neural sparse</span>
+                    <span class="ef-landing-pill"><i></i>Sparse-first retrieval</span>
                     <span class="ef-landing-pill"><i></i>Evidence verification</span>
                     <span class="ef-landing-pill"><i></i>Persistent threads</span>
                   </div>
@@ -2035,12 +2506,52 @@ with _main_col:
                 <div class="ef-ready-copy"><strong>Research workspace ready</strong><p>Upload a document, or start with a question. The agent decides what to use.</p></div>
                 <div class="ef-live-metric"><span>Knowledge sources</span><strong>{_doc_count}</strong></div>
                 <div class="ef-live-metric"><span>Research threads</span><strong>{_thread_count}</strong></div>
-                <div class="ef-live-metric"><span>Backend</span><strong>{html_lib.escape(_BACKEND)}</strong></div>
+                <div class="ef-live-metric"><span>Retrieval</span><strong>Sparse-first</strong></div>
               </div>
             </section>
             """,
             unsafe_allow_html=True,
         )
+        render_demo_onboarding(_POC_ROOT / "demo")
+        st.markdown("### Start with a research task")
+        st.caption(
+            "Choose an example to run it directly. For policy examples, "
+            "download and upload the sample documents above first."
+        )
+
+        _starter_prompts = [
+            (
+                "Find a key detail",
+                "What is the Cyber Liability sublimit and deductible?",
+                "Retrieve a specific policy value and its supporting evidence.",
+            ),
+            (
+                "Compare documents",
+                "Compare the Cyber Liability and Business Interruption changes between the 2025 and 2026 policies.",
+                "Compare limits, deductibles, and waiting periods across policy versions.",
+            ),
+            (
+                "Test evidence boundaries",
+                "What is the company's revenue in 2030?",
+                "Test whether the uploaded evidence supports a claim or requires abstention.",
+            ),
+        ]
+
+        _starter_cols = st.columns(3, gap="medium")
+
+        for _idx, (_title, _prompt, _description) in enumerate(_starter_prompts):
+            with _starter_cols[_idx]:
+                with st.container(border=True):
+                    st.markdown(f"**{_title}**")
+                    st.caption(_description)
+
+                    if st.button(
+                        "Run example",
+                        key=f"ef-starter-{_idx}",
+                        width="stretch",
+                    ):
+                        st.session_state["_pending_starter_prompt"] = _prompt
+                        st.rerun()
 
     _ASSISTANT_AVATAR = "🤖"
     _last_idx = len(st.session_state.messages) - 1
@@ -2167,6 +2678,9 @@ with _main_col:
         "tiff",
     ],
     )
+    _pending_starter_prompt = st.session_state.pop(
+        "_pending_starter_prompt", None
+    )
 
     # A "Regenerate" click on the last message (see the history loop above)
     # stashes the preceding user text here and reruns — picked up as if it were
@@ -2177,6 +2691,8 @@ with _main_col:
     is_regenerate = _pending_regenerate is not None
     if is_regenerate:
         text, files = _pending_regenerate, []
+    elif _pending_starter_prompt:
+        text, files = _pending_starter_prompt, []
     elif user_input:
         text = user_input if isinstance(user_input, str) else user_input.text
         files = [] if isinstance(user_input, str) else user_input.files
