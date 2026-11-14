@@ -194,6 +194,12 @@ This separation keeps the trust layer practical and focused instead of turning t
 
 The project includes a containerized Render deployment configuration with a Streamlit health check, OpenSearch connectivity, optional web research, and configurable Jina reranking.
 
+### Secure portfolio demo session
+
+When EvidenceFlow is launched from the AI Engineering Studio portfolio, the app receives a short-lived, single-use handoff code. It removes `portfolio_llm_handoff` from the URL immediately, exchanges the code server-side with the shared Portfolio LLM Gateway, and stores the resulting short-lived bearer token only in Streamlit session state. The legacy `portfolio_llm_session` JWT query parameter is rejected.
+
+Configure `PORTFOLIO_SESSION_GATEWAY_URL` in the Streamlit hosting environment with the shared Portfolio LLM Gateway root URL, for example `https://portfolio-llm-gateway.onrender.com`. Do not point this setting at the local generic LiteLLM service. The regular `LLM_GATEWAY_URL` continues to configure the OpenAI-compatible inference endpoint.
+
 Key deployment settings include:
 
 ```text

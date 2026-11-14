@@ -107,6 +107,10 @@ _POC_ROOT = _HERE.parent
 if str(_POC_ROOT) not in sys.path:
     sys.path.insert(0, str(_POC_ROOT))
 from app.demo_onboarding import render_demo_onboarding  # noqa: E402
+from app.gateway_handoff import (  # noqa: E402
+    GatewayHandoffError,
+    exchange_handoff_code,
+)
 
 from sidebar_toggle import render_sidebar_toggle  # noqa: E402
 from agents.multi_agent_orchestrator import astream_langgraph_turn, build_langgraph_agent
@@ -187,14 +191,119 @@ apply_theme(
 
 render_sidebar_toggle()
 
-# Portfolio handoff: accept the temporary gateway JWT from the portfolio launch URL.
-portfolio_token = str(st.query_params.get("portfolio_llm_session", "")).strip()
-if portfolio_token:
-    st.session_state.llm_gateway_session_token = portfolio_token
+# Portfolio handoff: exchange a short-lived, single-use code.
+# The bearer JWT is received server-side and kept in Streamlit session state.
+_HANDOFF_PARAM = "portfolio_llm_handoff"
+_LEGACY_HANDOFF_PARAM = "portfolio_llm_session"
+
+
+def _clear_portfolio_gateway_session() -> None:
+    st.session_state["llm_gateway_session_token"] = ""
+    st.session_state.pop(
+        "llm_gateway_session_expires_at",
+        None,
+    )
+    st.session_state.pop("built_agent", None)
+    st.session_state.pop("built_agent_gateway_token", None)
+
+
+def _handle_portfolio_handoff() -> None:
+    # Clear tokens left by the previous direct-JWT-in-URL implementation.
+    # The legacy query parameter is never accepted as a credential.
+    if st.session_state.get("_portfolio_handoff_protocol") != "v1":
+        _clear_portfolio_gateway_session()
+        st.session_state["_portfolio_handoff_protocol"] = "v1"
+
+    if _LEGACY_HANDOFF_PARAM in st.query_params:
+        try:
+            del st.query_params[_LEGACY_HANDOFF_PARAM]
+        except Exception:
+            pass
+
+        _clear_portfolio_gateway_session()
+        st.session_state["gateway_handoff_error"] = (
+            "This demo link uses the older session format. "
+            "Return to the portfolio, reconnect your provider, "
+            "and launch EvidenceFlow again."
+        )
+        return
+
+    if _HANDOFF_PARAM not in st.query_params:
+        expiry = st.session_state.get(
+            "llm_gateway_session_expires_at"
+        )
+        current_token = str(
+            st.session_state.get("llm_gateway_session_token", "")
+        ).strip()
+
+        if (
+            current_token
+            and expiry is not None
+            and datetime.now(timezone.utc).timestamp() >= float(expiry)
+        ):
+            _clear_portfolio_gateway_session()
+            st.session_state["gateway_handoff_error"] = (
+                "Your EvidenceFlow AI session has expired. "
+                "Return to the portfolio and launch a fresh session."
+            )
+        return
+
+    code = str(
+        st.query_params.get(_HANDOFF_PARAM, "")
+    ).strip()
+
+    # Remove the one-time code from the browser URL before network exchange.
     try:
-        del st.query_params["portfolio_llm_session"]
+        del st.query_params[_HANDOFF_PARAM]
     except Exception:
-        pass
+        _clear_portfolio_gateway_session()
+        st.session_state["gateway_handoff_error"] = (
+            "The demo launch code could not be removed from the URL. "
+            "Please return to the portfolio and launch EvidenceFlow again."
+        )
+        return
+
+    # A fresh launch attempt invalidates any prior session in this app.
+    _clear_portfolio_gateway_session()
+    st.session_state["gateway_handoff_error"] = ""
+
+    if not code:
+        st.session_state["gateway_handoff_error"] = (
+            "The demo launch code is missing. "
+            "Return to the portfolio and launch EvidenceFlow again."
+        )
+        return
+
+    try:
+        exchanged = exchange_handoff_code(
+            code,
+            project="evidenceflow",
+        )
+    except GatewayHandoffError as exc:
+        st.session_state["gateway_handoff_error"] = str(exc)
+        return
+
+    st.session_state["llm_gateway_session_token"] = (
+        exchanged["access_token"]
+    )
+
+    st.session_state["llm_gateway_session_expires_at"] = (
+        datetime.now(timezone.utc).timestamp()
+        + exchanged["expires_in"]
+    )
+
+    st.session_state["gateway_session_provider"] = (
+        exchanged.get("provider", "")
+    )
+    st.session_state["gateway_session_model"] = (
+        exchanged.get("model", "")
+    )
+
+
+_handle_portfolio_handoff()
+
+if st.session_state.get("gateway_handoff_error"):
+    st.error(st.session_state["gateway_handoff_error"])
 
 # --- Global styling ------------------------------------------------------
 _APP_CSS = """
