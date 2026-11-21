@@ -1106,6 +1106,31 @@ from citations.verifier import finalize as verifier_finalize  # noqa: E402
 
 
 def build_langchain_model(backend: str, *, gateway_token: str = ""):
+    gateway_token = (gateway_token or "").strip()
+
+    # Portfolio BYOK takes precedence over every configured backend.
+    if gateway_token:
+        from langchain_openai import ChatOpenAI
+
+        gateway_url = (
+            _get_env("LLM_GATEWAY_URL", "").strip()
+            or _get_env("LLM_BASE_URL", "").strip()
+        )
+
+        if not gateway_url:
+            raise RuntimeError(
+                "An active portfolio BYOK session was received, "
+                "but LLM_GATEWAY_URL is not configured on EvidenceFlow."
+            )
+
+        return ChatOpenAI(
+            model="session-model",
+            base_url=gateway_url,
+            api_key=gateway_token,
+            temperature=0,
+            timeout=120.0,
+            max_retries=2,
+        )
     if backend == "huggingface":
         from langchain_huggingface import ChatHuggingFace, HuggingFaceEndpoint
 

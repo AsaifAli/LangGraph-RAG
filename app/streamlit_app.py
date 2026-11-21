@@ -304,6 +304,12 @@ _handle_portfolio_handoff()
 
 if st.session_state.get("gateway_handoff_error"):
     st.error(st.session_state["gateway_handoff_error"])
+    st.info(
+        "Return to AI Engineering Studio, reconnect your provider, "
+        "and launch EvidenceFlow again. The demo needs an active "
+        "portfolio BYOK session."
+    )
+    st.stop()
 
 # --- Global styling ------------------------------------------------------
 _APP_CSS = """
