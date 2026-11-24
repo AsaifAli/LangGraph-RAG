@@ -257,3 +257,15 @@ The test suite and focused trust-layer regression tests cover areas including:
 ## Repository
 
 **GitHub:** https://github.com/AsaifAli/LangGraph-RAG
+
+
+## Internal engineering assurance
+
+EvidenceFlow reports a small, content-free event when a chat turn completes or fails. The event contains duration, retrieval counts, whether web/knowledge sources were used, and the evidence-audit result. User questions, answers, source excerpts, document IDs/names and uploaded files are never sent to the evaluation service.
+
+Configure these server-side variables on the EvidenceFlow deployment:
+
+- `EVALUATION_HARNESS_URL=https://ai-engineering-evaluation-harness.onrender.com`
+- `EVALUATION_HARNESS_INGEST_TOKEN` — the EvidenceFlow-specific token configured by the harness operator.
+
+Telemetry is best-effort. If the URL or token is missing, or the evaluation service is unavailable, EvidenceFlow continues its normal workflow without blocking the user. The website links to the shared read-only engineering assurance dashboard; this app does not run a separate harness service or require an additional provider key.
