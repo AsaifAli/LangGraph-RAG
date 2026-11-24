@@ -84,6 +84,7 @@ import json
 import os
 import re
 import sys
+import time
 import uuid
 import logging
 import traceback
@@ -115,6 +116,7 @@ from app.gateway_handoff import (  # noqa: E402
 from sidebar_toggle import render_sidebar_toggle  # noqa: E402
 from agents.multi_agent_orchestrator import astream_langgraph_turn, build_langgraph_agent
 from citations.verifier import verify_reference  # noqa: E402
+from shared.evaluation_harness import record_event  # noqa: E402
 from retrieval.rag_pipeline import (  # noqa: E402
     DEFAULT_BACKEND,
     DEFAULT_TURN_TIMEOUT_SECONDS,
@@ -2898,6 +2900,7 @@ with _main_col:
                 status_box.update(label="Done", state="complete")
                 return final_outcome
 
+            turn_started = time.perf_counter()
             with st.chat_message("assistant", avatar=_ASSISTANT_AVATAR):
                 outcome = None
                 error_text = None
@@ -2938,6 +2941,12 @@ with _main_col:
                 # survives the rerun and renders every time, like any other
                 # chat bubble.
                 if error_text is not None:
+                    record_event(
+                        event_type="run.failed",
+                        status="failed",
+                        workflow="rag_query",
+                        duration_ms=(time.perf_counter() - turn_started) * 1000,
+                    )
                     st.error(error_text)  # still shown immediately in this run, for zero-latency feedback
                     # "kind": "turn_error" — a REAL turn failure (timeout,
                     # exception), not a system notice: there IS a real question
@@ -2956,6 +2965,22 @@ with _main_col:
                 # chat `content` gets the tags stripped, so the bubble itself
                 # never shows raw "[EVID: E1]" text to the user.
                 meta = _meta_from_outcome(outcome)
+                evidence_audit = outcome.get("evidence_audit") or {}
+                audit_passed = evidence_audit.get("decision") == "PASS"
+                record_event(
+                    event_type="run.completed",
+                    status="success" if not outcome.get("abstained") and (audit_passed or not evidence_audit) else "warning",
+                    workflow="rag_query",
+                    duration_ms=(time.perf_counter() - turn_started) * 1000,
+                    model=st.session_state.get("gateway_session_model") or None,
+                    metrics={
+                        "retrieved_chunks": len(meta.get("chunks") or []),
+                        "web_sources": len(meta.get("web_sources") or []),
+                        "used_knowledge_base": bool(outcome.get("used_knowledge_base")),
+                        "used_primary_source": bool(meta.get("used_primary_source")),
+                        "evidence_audit_pass": bool(audit_passed),
+                    },
+                )
                 if (meta.get("chunks") or meta.get("web_sources") or meta.get("used_primary_source")):
                     st.session_state.evidence_open = True
                 st.session_state.messages.append(
