@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 import re
+import socket
 
 from pathlib import Path
 from typing import Any
@@ -54,6 +56,84 @@ def _configured_gateway_url() -> str:
         ).strip()
     except Exception:
         return ""
+
+
+def _validate_gateway_destination(base_url: str) -> None:
+    """Reject remote cleartext and private-network destinations before sending a code."""
+    try:
+        parsed = urlsplit(base_url.strip())
+        hostname = parsed.hostname
+        port = parsed.port
+    except ValueError as exc:
+        raise GatewayHandoffError(
+            "The portfolio session gateway URL is invalid."
+        ) from exc
+
+    if not hostname:
+        raise GatewayHandoffError(
+            "The portfolio session gateway URL is invalid."
+        )
+
+    normalized_host = hostname.rstrip(".").lower()
+    is_production = (
+        os.environ.get("APP_ENV", "").strip().lower()
+        in {"prod", "production"}
+        or os.environ.get("RENDER", "").strip().lower() in {"1", "true"}
+        or bool(os.environ.get("K_SERVICE"))
+    )
+    local_hosts = {
+        "localhost",
+        "localhost.localdomain",
+        "127.0.0.1",
+        "::1",
+        "host.docker.internal",
+    }
+    is_local_destination = (
+        normalized_host in local_hosts
+        or normalized_host.endswith(".localhost")
+        or normalized_host.endswith(".local")
+    )
+
+    if is_local_destination and not is_production:
+        if parsed.scheme not in {"http", "https"}:
+            raise GatewayHandoffError(
+                "The local portfolio session gateway URL is invalid."
+            )
+        return
+
+    if parsed.scheme != "https":
+        raise GatewayHandoffError(
+            "The portfolio session gateway must use HTTPS."
+        )
+
+    if port not in {None, 443}:
+        raise GatewayHandoffError(
+            "The portfolio session gateway must use the standard HTTPS port."
+        )
+
+    try:
+        try:
+            address = ipaddress.ip_address(normalized_host)
+            resolved_addresses = [address]
+        except ValueError:
+            records = socket.getaddrinfo(
+                normalized_host,
+                port or 443,
+                type=socket.SOCK_STREAM,
+            )
+            resolved_addresses = [
+                ipaddress.ip_address(record[4][0].split("%", 1)[0])
+                for record in records
+            ]
+    except (OSError, ValueError):
+        raise GatewayHandoffError(
+            "The portfolio session gateway host could not be safely resolved."
+        ) from None
+
+    if not resolved_addresses or any(not address.is_global for address in resolved_addresses):
+        raise GatewayHandoffError(
+            "The portfolio session gateway must resolve only to public addresses."
+        )
 
 
 def _exchange_endpoint(base_url: str) -> str:
@@ -135,6 +215,7 @@ def exchange_handoff_code(
             "Portfolio session exchange is not configured on this app."
         )
 
+    _validate_gateway_destination(base_url)
     endpoint = _exchange_endpoint(base_url)
 
     body = json.dumps(
