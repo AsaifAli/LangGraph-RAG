@@ -9,6 +9,10 @@ services:
     envVars:
       - key: APP_ENV
         value: production
+      - key: UPSTASH_REDIS_REST_URL
+        sync: false
+      - key: UPSTASH_REDIS_REST_TOKEN
+        sync: false
       - key: PORTFOLIO_SESSION_GATEWAY_ALLOWED_HOSTS
         value: portfolio-llm-gateway.onrender.com
       - key: KATZILLA_MCP_ALLOWED_HOSTS
