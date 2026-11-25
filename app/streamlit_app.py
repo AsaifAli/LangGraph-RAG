@@ -87,7 +87,6 @@ import sys
 import time
 import uuid
 import logging
-import traceback
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -108,6 +107,8 @@ _POC_ROOT = _HERE.parent
 if str(_POC_ROOT) not in sys.path:
     sys.path.insert(0, str(_POC_ROOT))
 from app.demo_onboarding import render_demo_onboarding  # noqa: E402
+from shared.security_logging import log_safe_failure  # noqa: E402
+
 from app.gateway_handoff import (  # noqa: E402
     GatewayHandoffError,
     exchange_handoff_code,
@@ -1912,18 +1913,22 @@ with st.sidebar:
             with st.spinner(f"Adding {sidebar_file.name}..."):
                 try:
                     result = _run_async(ingest_document(content, source_name=sidebar_file.name))
-                except Exception as exc:  # noqa: BLE001 - POC diagnostic surface
-                    # Appended as a real message, not `st.error(...)` — this
-                    # path always ends in `st.rerun()` a few lines down,
-                    # which redraws the whole page from scratch; a bare
-                    # `st.error` shown THIS run vanishes the instant that
-                    # rerun happens (seen live: "an error but it disappeared
-                    # instantly"). Only something in session_state survives
-                    # a rerun.
+                except Exception as exc:  # noqa: BLE001 - isolate one upload failure
+                    incident_id = log_safe_failure(
+                        LOGGER,
+                        "sidebar_document_ingest",
+                        exc,
+                    )
+                    # Keep the notice in session state so it survives the
+                    # rerun, but never expose parser/provider exception text.
                     st.session_state.messages.append(
                         {
                             "role": "assistant",
-                            "content": f"⚠️ Couldn't ingest {sidebar_file.name}: {exc!r}",
+                            "content": (
+                                "⚠️ The document could not be processed. "
+                                "Check the file format and try again. "
+                                f"Reference: {incident_id}"
+                            ),
                             "kind": "notice",
                         }
                     )
@@ -2828,9 +2833,22 @@ with _main_col:
             with st.spinner(f"Adding {f.name} to this chat's knowledge base..."):
                 try:
                     result = _run_async(ingest_document(content, source_name=f.name))
-                except Exception as exc:  # noqa: BLE001 - POC diagnostic surface
+                except Exception as exc:  # noqa: BLE001 - isolate one upload failure
+                    incident_id = log_safe_failure(
+                        LOGGER,
+                        "chat_document_ingest",
+                        exc,
+                    )
                     st.session_state.messages.append(
-                        {"role": "assistant", "content": f"Couldn't ingest {f.name}: {exc!r}", "kind": "notice"}
+                        {
+                            "role": "assistant",
+                            "content": (
+                                "Couldn't process this attachment. "
+                                "Check the file format and try again. "
+                                f"Reference: {incident_id}"
+                            ),
+                            "kind": "notice",
+                        }
                     )
                     continue
             st.session_state.chat_ingested_hashes.add(content_hash)
@@ -2921,16 +2939,16 @@ with _main_col:
                         f"⚠️ Sorry, this took longer than {_TURN_TIMEOUT_SECONDS}s and was stopped "
                         "(backend or retrieval likely stalled) — please try again."
                     )
-                except Exception as exc:  # noqa: BLE001 - POC diagnostic surface
-                    LOGGER.exception("LangGraph turn failed", exc_info=exc)
-                    tb = traceback.format_exc()
-                    error_text = f"⚠️ Sorry, that run failed: {exc!r}"
-                    # Keep the user-facing message clean, but expose the actual
-                    # exception type/traceback in an expandable diagnostic area
-                    # so hosted deployments don't collapse everything into the
-                    # unhelpful `UnexpectedResponse()` string.
-                    with st.expander("Technical error details", expanded=True):
-                        st.code(tb, language="text")
+                except Exception as exc:  # noqa: BLE001 - isolate a failed agent turn
+                    incident_id = log_safe_failure(
+                        LOGGER,
+                        "langgraph_turn",
+                        exc,
+                    )
+                    error_text = (
+                        "⚠️ Sorry, that run failed. Please retry. "
+                        f"Reference: {incident_id}"
+                    )
 
                 # Appended to session_state, not left as a bare `st.error(...)`
                 # call — this block always ends in `st.rerun()` a few lines
