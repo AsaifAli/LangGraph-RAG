@@ -63,6 +63,6 @@ def test_rejects_empty_binary_lookalike_text_and_unsupported_types():
 
 
 def test_enforces_configurable_upload_size_limit(monkeypatch):
-    monkeypatch.setenv("MAX_DOCUMENT_UPLOAD_MB", "0")
+    monkeypatch.setenv("MAX_DOCUMENT_UPLOAD_MB", "0.000001")
     with pytest.raises(ValueError, match="size limit"):
-        validate_document_upload(b"x", "quote.txt")
+        validate_document_upload(b"xx", "quote.txt")
