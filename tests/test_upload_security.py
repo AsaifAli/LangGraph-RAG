@@ -4,7 +4,7 @@ import zipfile
 import pytest
 from PIL import Image
 
-from shared.upload_security import validate_document_upload
+from shared.upload_security import validate_declared_upload_size, validate_document_upload
 
 
 def _docx_bytes() -> bytes:
@@ -66,3 +66,11 @@ def test_enforces_configurable_upload_size_limit(monkeypatch):
     monkeypatch.setenv("MAX_DOCUMENT_UPLOAD_MB", "0.000001")
     with pytest.raises(ValueError, match="size limit"):
         validate_document_upload(b"xx", "quote.txt")
+
+
+def test_preflight_rejects_oversized_declared_file_before_read(monkeypatch):
+    monkeypatch.setenv("MAX_DOCUMENT_UPLOAD_MB", "0.000001")
+    validate_declared_upload_size(1)
+    with pytest.raises(ValueError, match="configured size limit"):
+        validate_declared_upload_size(2)
+    validate_declared_upload_size(None)

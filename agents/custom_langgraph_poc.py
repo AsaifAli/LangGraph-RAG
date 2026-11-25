@@ -422,6 +422,7 @@ class GraphState(TypedDict, total=False):
     messages: Annotated[list[BaseMessage], _add_messages]
     tenant_schema: str
     platform_tenant_id: str
+    owner_scope: str
     document_ids: list[str]
     document_names: dict[str, str]  # document_id -> display name, for SUMMARY-mode targeting
     top_k: int
@@ -718,6 +719,7 @@ def _build_graph(*, model, web_search_tool, primary_source_mcp):
                         doc_id,
                         tenant_schema=state["tenant_schema"],
                         platform_tenant_id=state["platform_tenant_id"],
+                        owner_scope=state["owner_scope"],
                     )
                     for doc_id in target_ids
                 ]
@@ -737,6 +739,7 @@ def _build_graph(*, model, web_search_tool, primary_source_mcp):
             platform_tenant_id=state["platform_tenant_id"],
             document_ids=state["document_ids"],
             top_k=state["top_k"],
+            owner_scope=state["owner_scope"],
         )
         findings = []
         for c in chunks:
@@ -969,6 +972,7 @@ def build_langgraph_agent(
     platform_tenant_id: str = PLATFORM_TENANT_ID,
     document_ids_provider: Callable[[], list[str]] | None = None,
     document_names_provider: Callable[[], dict[str, str]] | None = None,
+    owner_scope_provider: Callable[[], str] | None = None,
     top_k: int = DEFAULT_TOP_K,
     backend: str = DEFAULT_BACKEND,
     checkpointer: Any | None = None,
@@ -993,6 +997,8 @@ def build_langgraph_agent(
         document_ids_provider = lambda: []  # noqa: E731
     if document_names_provider is None:
         document_names_provider = lambda: {}  # noqa: E731
+    if owner_scope_provider is None:
+        owner_scope_provider = lambda: LOCAL_OWNER_SCOPE  # noqa: E731
 
     model = build_langchain_model(backend, gateway_token=gateway_token)
     # Web search is an optional capability.  The document-RAG path must remain
@@ -1012,6 +1018,7 @@ def build_langgraph_agent(
         "primary_source_mcp": primary_source_mcp,
         "document_ids_provider": document_ids_provider,
         "document_names_provider": document_names_provider,
+        "owner_scope_provider": owner_scope_provider,
         "tenant_schema": tenant_schema,
         "platform_tenant_id": platform_tenant_id,
         "top_k": top_k,
@@ -1023,6 +1030,7 @@ def _turn_input(built: dict[str, Any], query: str) -> dict[str, Any]:
         "messages": [HumanMessage(content=query)],
         "tenant_schema": built["tenant_schema"],
         "platform_tenant_id": built["platform_tenant_id"],
+        "owner_scope": built["owner_scope_provider"](),
         "document_ids": built["document_ids_provider"](),
         "document_names": built["document_names_provider"](),
         "top_k": built["top_k"],

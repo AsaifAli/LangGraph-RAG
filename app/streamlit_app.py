@@ -108,6 +108,9 @@ if str(_POC_ROOT) not in sys.path:
     sys.path.insert(0, str(_POC_ROOT))
 from app.demo_onboarding import render_demo_onboarding  # noqa: E402
 from shared.security_logging import log_safe_failure  # noqa: E402
+from shared.document_access import filter_documents_for_owner, owner_scope_matches  # noqa: E402
+from shared.rate_limit import RateLimitBackendUnavailable, RateLimitExceeded, owner_rate_limiter  # noqa: E402
+from shared.upload_security import validate_declared_upload_size  # noqa: E402
 
 from app.gateway_handoff import (  # noqa: E402
     GatewayHandoffError,
@@ -202,12 +205,69 @@ _LEGACY_HANDOFF_PARAM = "portfolio_llm_session"
 
 def _clear_portfolio_gateway_session() -> None:
     st.session_state["llm_gateway_session_token"] = ""
+    st.session_state["gateway_owner_scope"] = ""
+    st.session_state.pop("_local_document_owner_scope", None)
+    for key in (
+        "messages",
+        "chat_store",
+        "uploaded_docs",
+        "chat_uploaded_docs",
+        "chat_ingested_hashes",
+        "ingested_hashes",
+        "thread_id",
+        "built_agent_owner_scope",
+        "built_agent",
+        "built_agent_gateway_token",
+    ):
+        st.session_state.pop(key, None)
     st.session_state.pop(
         "llm_gateway_session_expires_at",
         None,
     )
-    st.session_state.pop("built_agent", None)
-    st.session_state.pop("built_agent_gateway_token", None)
+    try:
+        if "chat" in st.query_params:
+            del st.query_params["chat"]
+    except Exception:
+        pass
+
+
+def _current_owner_scope() -> str:
+    """Return the active opaque owner scope, or an isolated local demo scope."""
+    candidate = str(st.session_state.get("gateway_owner_scope", "") or "").strip().lower()
+    if re.fullmatch(r"[a-f0-9]{64}", candidate):
+        return candidate
+    local_scope = st.session_state.get("_local_document_owner_scope")
+    if not isinstance(local_scope, str) or not re.fullmatch(r"[a-f0-9]{64}", local_scope):
+        local_scope = uuid.uuid4().hex + uuid.uuid4().hex
+        st.session_state["_local_document_owner_scope"] = local_scope
+    return local_scope
+
+
+def _activate_gateway_owner_scope(owner_scope: str) -> None:
+    previous = str(st.session_state.get("gateway_owner_scope", "") or "")
+    if previous and previous != owner_scope:
+        # A browser session can be re-used after a different user signs in.
+        # Clear all previously loaded private chat/document state before the
+        # next script section repopulates it from that owner's own registry.
+        for key in (
+            "messages",
+            "chat_store",
+            "uploaded_docs",
+            "chat_uploaded_docs",
+            "chat_ingested_hashes",
+            "ingested_hashes",
+            "thread_id",
+            "built_agent",
+            "built_agent_gateway_token",
+            "built_agent_owner_scope",
+        ):
+            st.session_state.pop(key, None)
+        try:
+            if "chat" in st.query_params:
+                del st.query_params["chat"]
+        except Exception:
+            pass
+    st.session_state["gateway_owner_scope"] = owner_scope
 
 
 def _handle_portfolio_handoff() -> None:
@@ -238,6 +298,17 @@ def _handle_portfolio_handoff() -> None:
         current_token = str(
             st.session_state.get("llm_gateway_session_token", "")
         ).strip()
+
+        if current_token and not re.fullmatch(
+            r"[a-f0-9]{64}",
+            str(st.session_state.get("gateway_owner_scope", "") or ""),
+        ):
+            _clear_portfolio_gateway_session()
+            st.session_state["gateway_handoff_error"] = (
+                "Your EvidenceFlow session predates document access isolation. "
+                "Return to the portfolio and launch a fresh session."
+            )
+            return
 
         if (
             current_token
@@ -285,6 +356,16 @@ def _handle_portfolio_handoff() -> None:
     except GatewayHandoffError as exc:
         st.session_state["gateway_handoff_error"] = str(exc)
         return
+
+    owner_scope = str(exchanged.get("owner_scope") or "").strip().lower()
+    if not re.fullmatch(r"[a-f0-9]{64}", owner_scope):
+        _clear_portfolio_gateway_session()
+        st.session_state["gateway_handoff_error"] = (
+            "The portfolio did not provide a valid document access scope. "
+            "Please launch EvidenceFlow again."
+        )
+        return
+    _activate_gateway_owner_scope(owner_scope)
 
     st.session_state["llm_gateway_session_token"] = (
         exchanged["access_token"]
@@ -873,43 +954,64 @@ def _load_chat_store() -> dict:
     return {"threads": threads}
 
 
+def _owner_uploaded_docs_path() -> Path:
+    """Return an owner-specific registry path without exposing owner IDs."""
+    scope_digest = hashlib.sha256(_current_owner_scope().encode("utf-8")).hexdigest()
+    return _CHAT_HISTORY_DIR / "owners" / scope_digest / "uploaded_documents.json"
+
+
 def _load_uploaded_docs() -> list[dict]:
-    """Global document registry, `chat_history/uploaded_documents.json` —
-    by explicit request, uploads are no longer scoped to the chat they
-    happened in (see module docstring for why). One-time migration on first
-    load if this file doesn't exist yet: earlier versions stored each
-    chat's uploads in that chat's OWN `uploaded_docs` field, which would
-    otherwise strand any already-uploaded document with no path back into
-    scope — aggregated here instead (deduped by document_id) so nothing
-    already in OpenSearch becomes silently unreachable."""
-    if _UPLOADED_DOCS_PATH.exists():
+    """Load only this owner's persisted global upload registry.
+
+    Pre-isolation legacy uploads without a verified owner are intentionally
+    kept in the legacy file but never assigned to a new visitor. If records
+    already carry this exact owner scope, they can be copied into the new
+    owner-specific registry without exposing other records.
+    """
+    owner_path = _owner_uploaded_docs_path()
+    if owner_path.exists():
         try:
-            return json.loads(_UPLOADED_DOCS_PATH.read_text(encoding="utf-8"))
-        except Exception:  # noqa: BLE001 - corrupt/partial file, start fresh rather than crash the app
+            raw = json.loads(owner_path.read_text(encoding="utf-8"))
+            return filter_documents_for_owner(raw if isinstance(raw, list) else [], _current_owner_scope())
+        except Exception:  # noqa: BLE001 - corrupt registry is handled as empty
             return []
 
-    migrated: dict[str, dict] = {}
-    for f in _CHAT_HISTORY_DIR.glob("*.json"):
-        if f == _UPLOADED_DOCS_PATH:
+    candidates: list[dict] = []
+    if _UPLOADED_DOCS_PATH.exists():
+        try:
+            raw = json.loads(_UPLOADED_DOCS_PATH.read_text(encoding="utf-8"))
+            if isinstance(raw, list):
+                candidates.extend(raw)
+        except Exception:  # noqa: BLE001 - legacy file is not trusted
+            pass
+
+    # Preserve already-tagged owner records from older per-chat registries.
+    for path in _CHAT_HISTORY_DIR.glob("*.json"):
+        if path == _UPLOADED_DOCS_PATH:
             continue
         try:
-            thread = json.loads(f.read_text(encoding="utf-8"))
+            thread = json.loads(path.read_text(encoding="utf-8"))
         except Exception:  # noqa: BLE001
             continue
-        for doc in thread.get("uploaded_docs", []) or []:
-            migrated.setdefault(doc["document_id"], doc)
-    docs = list(migrated.values())
-    if docs:
-        _CHAT_HISTORY_DIR.mkdir(parents=True, exist_ok=True)
-        _UPLOADED_DOCS_PATH.write_text(json.dumps(docs, indent=2), encoding="utf-8")
-    return docs
+        if isinstance(thread, dict):
+            candidates.extend(thread.get("uploaded_docs", []) or [])
+
+    owned = filter_documents_for_owner(candidates, _current_owner_scope())
+    if owned:
+        owner_path.parent.mkdir(parents=True, exist_ok=True)
+        owner_path.write_text(json.dumps(owned, indent=2), encoding="utf-8")
+    return owned
 
 
 def _save_uploaded_docs() -> None:
-    _CHAT_HISTORY_DIR.mkdir(parents=True, exist_ok=True)
-    _UPLOADED_DOCS_PATH.write_text(
-        json.dumps(st.session_state.uploaded_docs, indent=2), encoding="utf-8"
+    owner_path = _owner_uploaded_docs_path()
+    owner_path.parent.mkdir(parents=True, exist_ok=True)
+    owned = filter_documents_for_owner(
+        st.session_state.uploaded_docs,
+        _current_owner_scope(),
     )
+    st.session_state.uploaded_docs = owned
+    owner_path.write_text(json.dumps(owned, indent=2), encoding="utf-8")
 
 
 def _messages_to_jsonable(messages: list[dict]) -> list[dict]:
@@ -954,7 +1056,11 @@ st.session_state.setdefault("messages", [])  # [{"role": "user"|"assistant", "co
 st.session_state.setdefault("evidence_open", False)
 st.session_state.setdefault("selected_evidence_id", None)
 st.session_state.setdefault("evidence_checks", {})
-st.session_state.setdefault("uploaded_docs", _load_uploaded_docs())  # GLOBAL (sidebar uploader) — see module docstring
+st.session_state.setdefault("uploaded_docs", _load_uploaded_docs())  # GLOBAL within the active owner scope
+st.session_state.uploaded_docs = filter_documents_for_owner(
+    st.session_state.uploaded_docs,
+    _current_owner_scope(),
+)
 st.session_state.setdefault("sidebar_uploader_key", 0)  # bumped after each ingest to reset the widget
 st.session_state.setdefault("built_agent", None)
 # Seeded from the persisted registry, not just an empty set — a file already
@@ -965,6 +1071,12 @@ st.session_state.setdefault(
     {d["content_hash"] for d in st.session_state.uploaded_docs if d.get("content_hash")},
 )
 st.session_state.setdefault("chat_store", _load_chat_store())  # {"threads": [{thread_id, title, messages, ...}]}
+# A browser may present a guessed/stale chat ID. Only owner-tagged chats for
+# the current Gateway scope participate in resume, list, switch or delete.
+st.session_state.chat_store["threads"] = filter_documents_for_owner(
+    st.session_state.chat_store.get("threads", []),
+    _current_owner_scope(),
+)
 
 # Active thread persisted across a real browser REFRESH, not just a
 # same-tab rerun. `st.session_state` does not survive a hard reload — a
@@ -1001,7 +1113,10 @@ if "chat_uploaded_docs" not in st.session_state:
         (t for t in st.session_state.chat_store["threads"] if t["thread_id"] == st.session_state.thread_id),
         None,
     )
-    st.session_state.chat_uploaded_docs = list((_current_thread or {}).get("uploaded_docs", []))
+    st.session_state.chat_uploaded_docs = filter_documents_for_owner(
+        (_current_thread or {}).get("uploaded_docs", []),
+        _current_owner_scope(),
+    )
 st.session_state.setdefault(
     "chat_ingested_hashes",
     {d["content_hash"] for d in st.session_state.chat_uploaded_docs if d.get("content_hash")},
@@ -1105,11 +1220,24 @@ def _persist_current_chat() -> None:
     blank files."""
     if not st.session_state.messages:
         return
+    owner_scope = _current_owner_scope()
     threads = st.session_state.chat_store["threads"]
-    thread = next((t for t in threads if t["thread_id"] == st.session_state.thread_id), None)
+    thread = next(
+        (
+            t for t in threads
+            if t.get("thread_id") == st.session_state.thread_id
+            and owner_scope_matches(t, owner_scope)
+        ),
+        None,
+    )
     if thread is None:
-        thread = {"thread_id": st.session_state.thread_id, "title": None}
+        thread = {
+            "thread_id": st.session_state.thread_id,
+            "title": None,
+            "owner_scope": owner_scope,
+        }
         threads.append(thread)
+    thread["owner_scope"] = owner_scope
     if not thread.get("title"):
         first_user = next((m["content"] for m in st.session_state.messages if m["role"] == "user"), None)
         if first_user:
@@ -1118,7 +1246,10 @@ def _persist_current_chat() -> None:
     # This chat's own PER-CHAT attached documents (not the global sidebar
     # ones — see module docstring) — a property of this specific thread,
     # persisted alongside its messages so `_switch_to_chat` can restore it.
-    thread["uploaded_docs"] = list(st.session_state.chat_uploaded_docs)
+    thread["uploaded_docs"] = filter_documents_for_owner(
+        st.session_state.chat_uploaded_docs,
+        owner_scope,
+    )
     thread["updated_at"] = datetime.now(timezone.utc).isoformat()
     _CHAT_HISTORY_DIR.mkdir(parents=True, exist_ok=True)
     _chat_file_path(st.session_state.thread_id).write_text(
@@ -1127,8 +1258,14 @@ def _persist_current_chat() -> None:
 
 
 def _switch_to_chat(thread_id: str) -> None:
+    owner_scope = _current_owner_scope()
     thread = next(
-        (t for t in st.session_state.chat_store["threads"] if t["thread_id"] == thread_id), None
+        (
+            t for t in st.session_state.chat_store["threads"]
+            if t.get("thread_id") == thread_id
+            and owner_scope_matches(t, owner_scope)
+        ),
+        None,
     )
     if thread is None:
         return
@@ -1137,7 +1274,10 @@ def _switch_to_chat(thread_id: str) -> None:
     # PER-CHAT documents load with the chat they belong to (module docstring)
     # — the GLOBAL sidebar list is untouched, it's the same regardless of
     # which chat is active.
-    st.session_state.chat_uploaded_docs = list(thread.get("uploaded_docs", []))
+    st.session_state.chat_uploaded_docs = filter_documents_for_owner(
+        thread.get("uploaded_docs", []),
+        owner_scope,
+    )
     st.session_state.chat_ingested_hashes = {
         d["content_hash"] for d in st.session_state.chat_uploaded_docs if d.get("content_hash")
     }
@@ -1160,11 +1300,19 @@ def _delete_chat(thread_id: str) -> None:
     since the chat being deleted isn't necessarily the active one — deleting
     a past chat from the sidebar must delete THAT chat's documents, not
     whatever's currently loaded for the chat you're looking at."""
+    owner_scope = _current_owner_scope()
     target = next(
-        (t for t in st.session_state.chat_store["threads"] if t["thread_id"] == thread_id), None
+        (
+            t for t in st.session_state.chat_store["threads"]
+            if t.get("thread_id") == thread_id
+            and owner_scope_matches(t, owner_scope)
+        ),
+        None,
     )
-    for d in (target or {}).get("uploaded_docs", []):
-        _run_async(delete_document(d["document_id"]))
+    if target is None:
+        return
+    for d in filter_documents_for_owner(target.get("uploaded_docs", []), owner_scope):
+        _run_async(delete_document(d["document_id"], owner_scope=owner_scope))
 
     st.session_state.chat_store["threads"] = [
         t for t in st.session_state.chat_store["threads"] if t["thread_id"] != thread_id
@@ -1189,8 +1337,17 @@ def _delete_document(document_id: str) -> None:
     and its content hash from `ingested_hashes` (so re-uploading the exact
     same file later isn't silently skipped as "already ingested" — it
     genuinely isn't, anymore)."""
-    doc = next((d for d in st.session_state.uploaded_docs if d["document_id"] == document_id), None)
-    _run_async(delete_document(document_id))
+    owner_scope = _current_owner_scope()
+    doc = next(
+        (
+            d for d in filter_documents_for_owner(st.session_state.uploaded_docs, owner_scope)
+            if d["document_id"] == document_id
+        ),
+        None,
+    )
+    if doc is None:
+        return
+    _run_async(delete_document(document_id, owner_scope=owner_scope))
     st.session_state.uploaded_docs = [
         d for d in st.session_state.uploaded_docs if d["document_id"] != document_id
     ]
@@ -1213,8 +1370,17 @@ def _delete_chat_document(document_id: str) -> None:
     chat's own list) and `chat_ingested_hashes` instead of the global ones.
     Caller is responsible for `_persist_current_chat()` afterward, same as
     the global version's callers do."""
-    doc = next((d for d in st.session_state.chat_uploaded_docs if d["document_id"] == document_id), None)
-    _run_async(delete_document(document_id))
+    owner_scope = _current_owner_scope()
+    doc = next(
+        (
+            d for d in filter_documents_for_owner(st.session_state.chat_uploaded_docs, owner_scope)
+            if d["document_id"] == document_id
+        ),
+        None,
+    )
+    if doc is None:
+        return
+    _run_async(delete_document(document_id, owner_scope=owner_scope))
     st.session_state.chat_uploaded_docs = [
         d for d in st.session_state.chat_uploaded_docs if d["document_id"] != document_id
     ]
@@ -1231,7 +1397,7 @@ def _delete_chat_document(document_id: str) -> None:
 
 
 def _clear_everything() -> None:
-    """Wipe every chat and every document — explicit-action only, no
+    """Wipe this access scope's chats and documents — explicit-action only, no
     automatic trigger (Streamlit has no officially supported "browser tab
     closed" hook — `st.session_state` is documented as just dropped from
     server memory on disconnect, nothing fires user code; a real
@@ -1253,27 +1419,44 @@ def _clear_everything() -> None:
     BEFORE deleting the chat files themselves, since the files being wiped
     below are the only record of which per-chat documents belong to which
     (now-deleted) chat."""
-    for d in list(st.session_state.uploaded_docs):
-        _run_async(delete_document(d["document_id"]))
+    owner_scope = _current_owner_scope()
+    owned_threads = filter_documents_for_owner(
+        st.session_state.chat_store["threads"],
+        owner_scope,
+    )
+    for doc in filter_documents_for_owner(st.session_state.uploaded_docs, owner_scope):
+        _run_async(delete_document(doc["document_id"], owner_scope=owner_scope))
     st.session_state.uploaded_docs = []
     st.session_state.ingested_hashes = set()
     _save_uploaded_docs()
 
-    per_chat_ids = {d["document_id"] for d in st.session_state.chat_uploaded_docs}
-    for t in st.session_state.chat_store["threads"]:
-        per_chat_ids.update(d["document_id"] for d in t.get("uploaded_docs", []))
+    per_chat_docs = filter_documents_for_owner(
+        st.session_state.chat_uploaded_docs,
+        owner_scope,
+    )
+    for thread in owned_threads:
+        per_chat_docs.extend(
+            filter_documents_for_owner(thread.get("uploaded_docs", []), owner_scope)
+        )
+    per_chat_ids = {doc["document_id"] for doc in per_chat_docs}
     for doc_id in per_chat_ids:
-        _run_async(delete_document(doc_id))
+        _run_async(delete_document(doc_id, owner_scope=owner_scope))
     st.session_state.chat_uploaded_docs = []
     st.session_state.chat_ingested_hashes = set()
 
     if st.session_state.built_agent is not None:
-        for t in list(st.session_state.chat_store["threads"]):
-            _run_async(st.session_state.built_agent["agent"].checkpointer.adelete_thread(t["thread_id"]))
-    for f in _CHAT_HISTORY_DIR.glob("*.json"):
-        if f != _UPLOADED_DOCS_PATH:
-            f.unlink(missing_ok=True)
-    st.session_state.chat_store = {"threads": []}
+        for thread in owned_threads:
+            _run_async(
+                st.session_state.built_agent["agent"].checkpointer.adelete_thread(
+                    thread["thread_id"]
+                )
+            )
+    for thread in owned_threads:
+        _chat_file_path(thread["thread_id"]).unlink(missing_ok=True)
+    st.session_state.chat_store["threads"] = [
+        thread for thread in st.session_state.chat_store["threads"]
+        if not owner_scope_matches(thread, owner_scope)
+    ]
     st.session_state.messages = []
     st.session_state.thread_id = uuid.uuid4().hex
 
@@ -1281,8 +1464,8 @@ def _clear_everything() -> None:
 @st.dialog("Clear everything?")
 def _confirm_clear_everything() -> None:
     st.warning(
-        "This permanently deletes every chat and every document's vectors from "
-        "OpenSearch. This cannot be undone.",
+        "This permanently deletes the chats and document evidence belonging to this access scope. "
+        "Other owners' documents and chats are not affected.",
         icon="⚠️",
     )
     col_cancel, col_confirm = st.columns(2)
@@ -1304,8 +1487,16 @@ def _document_ids_in_scope() -> list[str]:
     builds an empty OpenSearch document filter rather than expanding scope,
     not "unrestricted" — no separate empty-list guard needed here or in
     retrieval."""
-    return [d["document_id"] for d in st.session_state.uploaded_docs] + [
-        d["document_id"] for d in st.session_state.chat_uploaded_docs
+    global_docs = filter_documents_for_owner(
+        st.session_state.uploaded_docs,
+        _current_owner_scope(),
+    )
+    chat_docs = filter_documents_for_owner(
+        st.session_state.chat_uploaded_docs,
+        _current_owner_scope(),
+    )
+    return [d["document_id"] for d in global_docs] + [
+        d["document_id"] for d in chat_docs
     ]
 
 
@@ -1317,8 +1508,16 @@ def _document_names_in_scope() -> dict[str, str]:
     a whole-document summarization request. Read live, same as
     `_document_ids_in_scope`, so a newly uploaded document's name is
     available immediately."""
-    names = {d["document_id"]: d["name"] for d in st.session_state.uploaded_docs}
-    names.update({d["document_id"]: d["name"] for d in st.session_state.chat_uploaded_docs})
+    global_docs = filter_documents_for_owner(
+        st.session_state.uploaded_docs,
+        _current_owner_scope(),
+    )
+    chat_docs = filter_documents_for_owner(
+        st.session_state.chat_uploaded_docs,
+        _current_owner_scope(),
+    )
+    names = {d["document_id"]: d["name"] for d in global_docs}
+    names.update({d["document_id"]: d["name"] for d in chat_docs})
     return names
 
 
@@ -1750,11 +1949,15 @@ def _render_message_meta(meta: dict, idx: int) -> None:
 
 
 def _record_upload(name: str, document_id: str, chunk_count: int, content_hash: str | None = None) -> None:
-    """GLOBAL upload record (sidebar uploader only — see module docstring).
-    Persisted immediately to its own file, independent of any one chat's
-    own save."""
+    """Owner-scoped global upload record, independent of a single chat."""
     st.session_state.uploaded_docs.append(
-        {"name": name, "document_id": document_id, "chunk_count": chunk_count, "content_hash": content_hash}
+        {
+            "name": name,
+            "document_id": document_id,
+            "chunk_count": chunk_count,
+            "content_hash": content_hash,
+            "owner_scope": _current_owner_scope(),
+        }
     )
     _save_uploaded_docs()  # global registry — persisted immediately, not tied to any one chat's save
     st.session_state.messages.append(
@@ -1776,7 +1979,13 @@ def _record_chat_upload(name: str, document_id: str, chunk_count: int, content_h
     `_persist_current_chat()` after every turn/attach, which is what
     actually writes `chat_uploaded_docs` into this thread's own file."""
     st.session_state.chat_uploaded_docs.append(
-        {"name": name, "document_id": document_id, "chunk_count": chunk_count, "content_hash": content_hash}
+        {
+            "name": name,
+            "document_id": document_id,
+            "chunk_count": chunk_count,
+            "content_hash": content_hash,
+            "owner_scope": _current_owner_scope(),
+        }
     )
     st.session_state.messages.append(
         {
@@ -1907,12 +2116,24 @@ with st.sidebar:
     # re-submit once on the next reconnect), so content-hash dedup below is
     # the actual guarantee, not just the key bump.
     if sidebar_file is not None:
+        try:
+            validate_declared_upload_size(getattr(sidebar_file, "size", None))
+        except ValueError as exc:
+            st.error(str(exc))
+            st.session_state.sidebar_uploader_key += 1
+            st.rerun()
         content = sidebar_file.read()
         content_hash = hashlib.sha256(content).hexdigest()
         if content_hash not in st.session_state.ingested_hashes:
             with st.spinner(f"Adding {sidebar_file.name}..."):
                 try:
-                    result = _run_async(ingest_document(content, source_name=sidebar_file.name))
+                    result = _run_async(
+                        ingest_document(
+                            content,
+                            source_name=sidebar_file.name,
+                            owner_scope=_current_owner_scope(),
+                        )
+                    )
                 except Exception as exc:  # noqa: BLE001 - isolate one upload failure
                     incident_id = log_safe_failure(
                         LOGGER,
@@ -1951,7 +2172,7 @@ with st.sidebar:
             with _col_doc:
                 st.markdown(
                     f'<div class="doc-chip">{_icon("file-text", size=15)}'
-                    f"{d['name']} — {d['chunk_count']} chunks</div>",
+                    f"{html_lib.escape(str(d['name']))} — {int(d['chunk_count'])} chunks</div>",
                     unsafe_allow_html=True,
                 )
             with _col_del_doc:
@@ -1974,7 +2195,7 @@ with st.sidebar:
             with _col_cdoc:
                 st.markdown(
                     f'<div class="doc-chip">{_icon("file-text", size=15)}'
-                    f"{d['name']} — {d['chunk_count']} chunks</div>",
+                    f"{html_lib.escape(str(d['name']))} — {int(d['chunk_count'])} chunks</div>",
                     unsafe_allow_html=True,
                 )
             with _col_del_cdoc:
@@ -1999,7 +2220,7 @@ with st.sidebar:
         "Clear everything",
         width="stretch",
         icon="🗑️",
-        help="Delete every chat and every document, permanently",
+        help="Delete every chat and document in the current access scope",
     ):
         _confirm_clear_everything()
 
@@ -2038,16 +2259,23 @@ def _get_or_build_agent() -> dict:
     valid thread to resume — forcing a fresh one here would silently
     discard that choice."""
     gateway_token = str(st.session_state.get("llm_gateway_session_token", "")).strip()
-    if st.session_state.built_agent is None or st.session_state.get("built_agent_gateway_token", "") != gateway_token:
+    owner_scope = _current_owner_scope()
+    if (
+        st.session_state.built_agent is None
+        or st.session_state.get("built_agent_gateway_token", "") != gateway_token
+        or st.session_state.get("built_agent_owner_scope", "") != owner_scope
+    ):
         checkpointer = _run_async(_build_checkpointer())
         st.session_state.built_agent = build_langgraph_agent(
             document_ids_provider=_document_ids_in_scope,
             document_names_provider=_document_names_in_scope,
+            owner_scope_provider=_current_owner_scope,
             backend=_BACKEND,
             checkpointer=checkpointer,
             gateway_token=gateway_token,
         )
         st.session_state.built_agent_gateway_token = gateway_token
+        st.session_state.built_agent_owner_scope = owner_scope
     return st.session_state.built_agent
 
 
@@ -2826,13 +3054,30 @@ with _main_col:
         # chat_ingested_hashes/_record_chat_upload, not the global ones the
         # sidebar uploader uses.
         for f in files:
+            try:
+                validate_declared_upload_size(getattr(f, "size", None))
+            except ValueError as exc:
+                st.session_state.messages.append(
+                    {
+                        "role": "assistant",
+                        "content": f"Attachment {html_lib.escape(str(f.name))} was not added: {exc}",
+                        "kind": "notice",
+                    }
+                )
+                continue
             content = f.read()
             content_hash = hashlib.sha256(content).hexdigest()
             if content_hash in st.session_state.chat_ingested_hashes:
                 continue  # already attached in this chat — skip silently
             with st.spinner(f"Adding {f.name} to this chat's knowledge base..."):
                 try:
-                    result = _run_async(ingest_document(content, source_name=f.name))
+                    result = _run_async(
+                        ingest_document(
+                            content,
+                            source_name=f.name,
+                            owner_scope=_current_owner_scope(),
+                        )
+                    )
                 except Exception as exc:  # noqa: BLE001 - isolate one upload failure
                     incident_id = log_safe_failure(
                         LOGGER,
@@ -2854,6 +3099,39 @@ with _main_col:
             st.session_state.chat_ingested_hashes.add(content_hash)
             _record_chat_upload(f.name, result["document_id"], result["chunk_count"], content_hash)
             st.toast(f"Added {f.name} ✓", icon="✅")
+
+        if text and text.strip():
+            try:
+                owner_rate_limiter.enforce(
+                    _current_owner_scope(),
+                    "chat",
+                    limit=30,
+                    window_seconds=60,
+                )
+            except RateLimitExceeded as exc:
+                st.session_state.messages.append(
+                    {
+                        "role": "assistant",
+                        "content": (
+                            "You've reached the EvidenceFlow message limit. "
+                            f"Please retry in about {exc.retry_after} seconds."
+                        ),
+                        "kind": "notice",
+                    }
+                )
+                text = None
+            except RateLimitBackendUnavailable:
+                st.session_state.messages.append(
+                    {
+                        "role": "assistant",
+                        "content": (
+                            "EvidenceFlow is temporarily unable to verify its request quota. "
+                            "Please retry shortly."
+                        ),
+                        "kind": "notice",
+                    }
+                )
+                text = None
 
         if text and text.strip():
             _display_text = text

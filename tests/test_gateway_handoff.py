@@ -14,6 +14,11 @@ from app.gateway_handoff import (
 
 @pytest.fixture(autouse=True)
 def _public_dns_for_gateway_tests(monkeypatch):
+    monkeypatch.setenv(
+        "PORTFOLIO_SESSION_GATEWAY_ALLOWED_HOSTS",
+        "portfolio-llm-gateway.onrender.com,gateway.example.com",
+    )
+
     def resolve_public(*args, **kwargs):
         return [
             (
@@ -104,6 +109,7 @@ def test_exchange_returns_valid_server_session(monkeypatch):
             "access_token": "signed-session-token",
             "expires_in": 900,
             "target_project": "evidenceflow",
+            "owner_scope": "a" * 64,
             "provider": "openai",
             "model": "gpt-4o-mini",
         },
@@ -124,6 +130,7 @@ def test_exchange_returns_valid_server_session(monkeypatch):
     assert result["access_token"] == "signed-session-token"
     assert result["expires_in"] == 900
     assert result["target_project"] == "evidenceflow"
+    assert result["owner_scope"] == "a" * 64
     assert fake_opener.timeout == 8
 
 
@@ -133,6 +140,7 @@ def test_exchange_rejects_wrong_target_project(monkeypatch):
             "access_token": "signed-session-token",
             "expires_in": 900,
             "target_project": "quotesense",
+            "owner_scope": "a" * 64,
         },
         "https://gateway.example.com/v1/demo/session/exchange",
     )
@@ -158,6 +166,7 @@ def test_exchange_rejects_missing_expiry(monkeypatch):
         {
             "access_token": "signed-session-token",
             "target_project": "evidenceflow",
+            "owner_scope": "a" * 64,
         },
         "https://gateway.example.com/v1/demo/session/exchange",
     )
@@ -236,6 +245,7 @@ def test_exchange_keeps_local_http_development_support(monkeypatch):
             "access_token": "signed-session-token",
             "expires_in": 900,
             "target_project": "evidenceflow",
+            "owner_scope": "a" * 64,
         },
         "http://127.0.0.1:8000/v1/demo/session/exchange",
     )
@@ -245,3 +255,36 @@ def test_exchange_keeps_local_http_development_support(monkeypatch):
         gateway_url="http://127.0.0.1:8000",
     )
     assert result["target_project"] == "evidenceflow"
+    assert result["owner_scope"] == "a" * 64
+
+
+
+def test_exchange_rejects_missing_or_invalid_owner_scope(monkeypatch):
+    fake_opener = FakeOpener(
+        {
+            "access_token": "signed-session-token",
+            "expires_in": 900,
+            "target_project": "evidenceflow",
+            "owner_scope": "not-an-owner-hash",
+        },
+        "https://gateway.example.com/v1/demo/session/exchange",
+    )
+    monkeypatch.setattr(gateway_handoff, "build_opener", lambda *args: fake_opener)
+    with pytest.raises(GatewayHandoffError, match="access scope"):
+        exchange_handoff_code(
+            "a" * 43,
+            gateway_url="https://gateway.example.com",
+        )
+
+
+
+def test_gateway_handoff_rejects_unapproved_public_host(monkeypatch):
+    monkeypatch.setenv(
+        "PORTFOLIO_SESSION_GATEWAY_ALLOWED_HOSTS",
+        "portfolio-llm-gateway.onrender.com",
+    )
+    with pytest.raises(GatewayHandoffError, match="not approved"):
+        exchange_handoff_code(
+            "a" * 43,
+            gateway_url="https://attacker.example.com",
+        )

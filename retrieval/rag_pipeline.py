@@ -55,6 +55,17 @@ from shared.constants import AIConstants
 
 TENANT_SCHEMA = _get_env("TENANT_SCHEMA", "poc_demo")
 PLATFORM_TENANT_ID = _get_env("PLATFORM_TENANT_ID", "langgraph_rag")
+# CLI/offline workflows stay on a local-only scope; hosted Streamlit always
+# supplies the opaque owner scope obtained from the Gateway's verified session.
+LOCAL_OWNER_SCOPE = "local-development"
+_OWNER_SCOPE_PATTERN = re.compile(r"^[a-f0-9]{64}$")
+
+
+def _validated_owner_scope(value: str) -> str:
+    scope = str(value or "").strip().lower()
+    if scope != LOCAL_OWNER_SCOPE and not _OWNER_SCOPE_PATTERN.fullmatch(scope):
+        raise ValueError("A valid document owner scope is required.")
+    return scope
 DEFAULT_BACKEND = _get_env("BACKEND", "litellm").strip().lower()
 DEFAULT_TOP_K = int(_get_env("TOP_K", "5"))
 DEFAULT_MAX_CONCURRENT_SUBAGENTS = int(_get_env("MAX_CONCURRENT_SUBAGENTS", "3"))
@@ -303,9 +314,8 @@ def ensure_opensearch_index(client: Any, *, index_name: str) -> None:
             index=index_name,
             body={
                 "properties": {
-                    "modality": {
-                        "type": "keyword"
-                    }
+                    "modality": {"type": "keyword"},
+                    "owner_scope": {"type": "keyword"},
                 }
             },
         )
@@ -328,6 +338,7 @@ def ensure_opensearch_index(client: Any, *, index_name: str) -> None:
             "section": {"type": "text"},
             "keywords": {"type": "text"},
             "document_id": {"type": "keyword"},
+            "owner_scope": {"type": "keyword"},
             "tenant_schema": {"type": "keyword"},
             "platform_tenant_id": {"type": "keyword"},
             "source_name": {"type": "keyword"},
@@ -372,6 +383,7 @@ def ensure_opensearch_index(client: Any, *, index_name: str) -> None:
 def _flatten_metadata(
     *,
     document_id: str,
+    owner_scope: str,
     tenant_schema: str,
     platform_tenant_id: str,
     source_name: str,
@@ -384,6 +396,7 @@ def _flatten_metadata(
 
     return {
         "document_id": document_id,
+        "owner_scope": _validated_owner_scope(owner_scope),
         "tenant_schema": f"{tenant_schema}_{platform_tenant_id}",
         "platform_tenant_id": platform_tenant_id,
         "source_name": source_name,
@@ -526,6 +539,7 @@ async def ingest_document(
     source_name: str,
     tenant_schema: str = TENANT_SCHEMA,
     platform_tenant_id: str = PLATFORM_TENANT_ID,
+    owner_scope: str = LOCAL_OWNER_SCOPE,
     document_id: str | None = None,
 ) -> dict:
     """Extract and index attributable document evidence.
@@ -534,12 +548,21 @@ async def ingest_document(
     image and visual-PDF extraction.
     """
 
+    owner_scope = _validated_owner_scope(owner_scope)
     if document_id is None:
         document_id = str(uuid.uuid4())
 
     from shared.upload_security import validate_document_upload
+    from shared.rate_limit import owner_rate_limiter
 
     validate_document_upload(content, source_name)
+    await asyncio.to_thread(
+        owner_rate_limiter.enforce,
+        owner_scope,
+        "upload",
+        limit=8,
+        window_seconds=3600,
+    )
 
     from shared.multimodal_extractor import (
         IMAGE_SUFFIXES,
@@ -635,6 +658,7 @@ async def ingest_document(
 
         doc = _flatten_metadata(
             document_id=document_id,
+            owner_scope=owner_scope,
             tenant_schema=tenant_schema,
             platform_tenant_id=platform_tenant_id,
             source_name=source_name,
@@ -797,8 +821,15 @@ def _rerank(query: str, chunks: list[RetrievedChunk], *, top_n: int) -> list[Ret
     raise RuntimeError(f"Unsupported RERANK_BACKEND={RERANK_BACKEND!r}")
 
 
-def _build_filters(document_ids: list[str], tenant_schema: str, platform_tenant_id: str) -> list[dict[str, Any]]:
+def _build_filters(
+    document_ids: list[str],
+    tenant_schema: str,
+    platform_tenant_id: str,
+    owner_scope: str = LOCAL_OWNER_SCOPE,
+) -> list[dict[str, Any]]:
+    owner_scope = _validated_owner_scope(owner_scope)
     filters: list[dict[str, Any]] = [
+        {"term": {"owner_scope": owner_scope}},
         {"term": {"tenant_schema": f"{tenant_schema}_{platform_tenant_id}"}},
         {"term": {"platform_tenant_id": platform_tenant_id}},
     ]
@@ -807,7 +838,14 @@ def _build_filters(document_ids: list[str], tenant_schema: str, platform_tenant_
     return filters
 
 
-def _lexical_query_body(query: str, document_ids: list[str], tenant_schema: str, platform_tenant_id: str, size: int) -> dict[str, Any]:
+def _lexical_query_body(
+    query: str,
+    document_ids: list[str],
+    tenant_schema: str,
+    platform_tenant_id: str,
+    size: int,
+    owner_scope: str = LOCAL_OWNER_SCOPE,
+) -> dict[str, Any]:
     should: list[dict[str, Any]] = [
         {"match": {"title": {"query": query, "boost": 3.0}}},
         {"match": {"heading": {"query": query, "boost": 3.0}}},
@@ -821,7 +859,7 @@ def _lexical_query_body(query: str, document_ids: list[str], tenant_schema: str,
         "_source": {"excludes": ["passage_embedding"]},
         "query": {
             "bool": {
-                "filter": _build_filters(document_ids, tenant_schema, platform_tenant_id),
+                "filter": _build_filters(document_ids, tenant_schema, platform_tenant_id, owner_scope),
                 "should": should,
                 "minimum_should_match": 1,
             }
@@ -831,14 +869,21 @@ def _lexical_query_body(query: str, document_ids: list[str], tenant_schema: str,
     return body
 
 
-def _neural_query_body(query: str, document_ids: list[str], tenant_schema: str, platform_tenant_id: str, size: int) -> dict[str, Any]:
+def _neural_query_body(
+    query: str,
+    document_ids: list[str],
+    tenant_schema: str,
+    platform_tenant_id: str,
+    size: int,
+    owner_scope: str = LOCAL_OWNER_SCOPE,
+) -> dict[str, Any]:
     return {
         "size": size,
         "track_total_hits": True,
         "_source": {"excludes": ["passage_embedding"]},
         "query": {
             "bool": {
-                "filter": _build_filters(document_ids, tenant_schema, platform_tenant_id),
+                "filter": _build_filters(document_ids, tenant_schema, platform_tenant_id, owner_scope),
                 "must": [
                     {
                         "neural_sparse": {
@@ -854,13 +899,29 @@ def _neural_query_body(query: str, document_ids: list[str], tenant_schema: str, 
     }
 
 
-def _search_once(client: Any, query: str, *, tenant_schema: str, platform_tenant_id: str, document_ids: list[str], size: int) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    lexical = client.search(index=opensearch_index_name(tenant_schema, platform_tenant_id), body=_lexical_query_body(query, document_ids, tenant_schema, platform_tenant_id, size))
+def _search_once(
+    client: Any,
+    query: str,
+    *,
+    tenant_schema: str,
+    platform_tenant_id: str,
+    document_ids: list[str],
+    size: int,
+    owner_scope: str = LOCAL_OWNER_SCOPE,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    lexical = client.search(
+        index=opensearch_index_name(tenant_schema, platform_tenant_id),
+        body=_lexical_query_body(
+            query, document_ids, tenant_schema, platform_tenant_id, size, owner_scope
+        ),
+    )
     lexical_hits = lexical.get("hits", {}).get("hits", [])
     neural_hits: list[dict[str, Any]] = []
     if OPENSEARCH_NEURAL_SPARSE:
         try:
-            neural = client.search(index=opensearch_index_name(tenant_schema, platform_tenant_id), body=_neural_query_body(query, document_ids, tenant_schema, platform_tenant_id, size))
+            neural = client.search(index=opensearch_index_name(tenant_schema, platform_tenant_id), body=_neural_query_body(
+                    query, document_ids, tenant_schema, platform_tenant_id, size, owner_scope
+                ))
             neural_hits = neural.get("hits", {}).get("hits", [])
         except Exception:
             neural_hits = []
@@ -901,6 +962,7 @@ async def retrieve_and_rerank(
     platform_tenant_id: str,
     document_ids: list[str],
     top_k: int = DEFAULT_TOP_K,
+    owner_scope: str = LOCAL_OWNER_SCOPE,
 ) -> list[RetrievedChunk]:
     client = build_opensearch_client()
     index_name = opensearch_index_name(tenant_schema, platform_tenant_id)
@@ -914,6 +976,7 @@ async def retrieve_and_rerank(
             platform_tenant_id=platform_tenant_id,
             document_ids=document_ids,
             size=max(LEXICAL_CANDIDATE_K, NEURAL_CANDIDATE_K),
+            owner_scope=owner_scope,
         )
         return _rrf_merge([lexical, neural], top_k=max(top_k, RERANK_CANDIDATE_K) if neural else top_k)
 
@@ -967,6 +1030,7 @@ async def retrieve_with_self_correction(
     document_ids: list[str],
     top_k: int = DEFAULT_TOP_K,
     max_rounds: int = MAX_AGENTIC_RETRIEVAL_ROUNDS,
+    owner_scope: str = LOCAL_OWNER_SCOPE,
 ) -> tuple[list[RetrievedChunk], str]:
     """Sparse-first retrieval with bounded agentic query expansion.
 
@@ -982,6 +1046,7 @@ async def retrieve_with_self_correction(
         platform_tenant_id=platform_tenant_id,
         document_ids=document_ids,
         top_k=top_k,
+        owner_scope=owner_scope,
     )
     best_query = query
 
@@ -1002,6 +1067,7 @@ async def retrieve_with_self_correction(
                     platform_tenant_id=platform_tenant_id,
                     document_ids=document_ids,
                     top_k=top_k,
+                    owner_scope=owner_scope,
                 )
                 for candidate in candidates
             ],
@@ -1032,6 +1098,7 @@ async def fetch_all_document_chunks(
     tenant_schema: str = TENANT_SCHEMA,
     platform_tenant_id: str = PLATFORM_TENANT_ID,
     max_chunks: int = DEFAULT_MAX_SUMMARY_CHUNKS,
+    owner_scope: str = LOCAL_OWNER_SCOPE,
 ) -> list[RetrievedChunk]:
     client = build_opensearch_client()
     index_name = opensearch_index_name(tenant_schema, platform_tenant_id)
@@ -1042,7 +1109,7 @@ async def fetch_all_document_chunks(
         "sort": [{"chunk_number": {"order": "asc"}}],
         "query": {
             "bool": {
-                "filter": _build_filters([document_id], tenant_schema, platform_tenant_id)
+                "filter": _build_filters([document_id], tenant_schema, platform_tenant_id, owner_scope)
             }
         },
         "_source": {"excludes": ["passage_embedding"]},
@@ -1061,12 +1128,13 @@ async def delete_document(
     *,
     tenant_schema: str = TENANT_SCHEMA,
     platform_tenant_id: str = PLATFORM_TENANT_ID,
+    owner_scope: str = LOCAL_OWNER_SCOPE,
 ) -> int:
     client = build_opensearch_client()
     index_name = opensearch_index_name(tenant_schema, platform_tenant_id)
     await _to_thread_with_retry(ensure_opensearch_index, client, index_name=index_name)
 
-    body = {"query": {"bool": {"filter": _build_filters([document_id], tenant_schema, platform_tenant_id)}}}
+    body = {"query": {"bool": {"filter": _build_filters([document_id], tenant_schema, platform_tenant_id, owner_scope)}}}
 
     def _delete() -> Any:
         response = client.delete_by_query(index=index_name, body=body, refresh=True, conflicts="proceed")

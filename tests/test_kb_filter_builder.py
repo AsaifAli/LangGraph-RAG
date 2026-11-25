@@ -11,3 +11,15 @@ def test_filters_include_tenant_and_document_scope():
 def test_empty_document_scope_does_not_expand_scope():
     filters = _build_filters([], "poc_demo", "langgraph_rag")
     assert not any("document_id" in condition.get("terms", {}) for condition in filters)
+
+
+
+def test_retrieval_filters_require_the_exact_owner_scope():
+    owner_a = "a" * 64
+    owner_b = "b" * 64
+    filters_a = _build_filters(["doc-1"], "poc_demo", "langgraph_rag", owner_a)
+    filters_b = _build_filters(["doc-1"], "poc_demo", "langgraph_rag", owner_b)
+
+    assert {"term": {"owner_scope": owner_a}} in filters_a
+    assert {"term": {"owner_scope": owner_b}} in filters_b
+    assert filters_a != filters_b

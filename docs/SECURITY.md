@@ -4,11 +4,11 @@ This is a code/configuration review, not a penetration test or a declaration of 
 
 ## Existing safeguards observed
 - `.env` is excluded from the repository/container context; secrets are read from server-side environment variables.
-- Retrieval requires tenant/document scope filters; an empty document scope does not become an unrestricted query.
+- Retrieval requires tenant, document and opaque owner-scope filters; lexical, neural-sparse, full-document summary and delete queries all use the same owner term. An empty document list does not become an unrestricted query.
 - The repository correctly documents that a tenant or document ID is not an authorization credential. A trusted identity/ACL service must approve document IDs before retrieval.
 - Citation verification is fail-closed in verified mode.
-- Gateway exchange uses a short-lived one-time code, bounded response size, an 8-second timeout, and a no-redirect handler; the exchanged bearer is retained in Streamlit server-side session state rather than the URL or browser JavaScript.
-- Tavily and Katzilla keys are loaded server-side; the MCP adapter does not intentionally put the key into model context.
+- Gateway exchange uses a short-lived one-time code, bounded response size, an 8-second timeout, an approved HTTPS Gateway host allowlist, public-DNS checks and a no-redirect handler; the exchanged bearer and owner scope are retained in Streamlit server-side session state rather than the URL or browser JavaScript.
+- Tavily and Katzilla keys are loaded server-side; the MCP adapter does not intentionally put the key into model context. Katzilla's HTTPS URL is pinned to an approved host/public DNS, proxy trust is disabled, and redirects are not followed.
 - OpenSearch, model and provider credentials are configured as deployment secrets rather than client-prefixed environment variables.
 
 ## Findings requiring attention
@@ -19,19 +19,26 @@ This is a code/configuration review, not a penetration test or a declaration of 
 5. **Diagnostic disclosure (Medium): PATCHED in main.** Upload and agent-turn failures now emit only a generated incident reference and exception class to application logs. The UI displays a generic retry message with that reference; raw exception messages and tracebacks are no longer rendered or logged.
 6. **Upload surface: PATCHED in main.** The central `retrieval/rag_pipeline.py::ingest_document` path calls `shared/upload_security.py` before parsers, image processing, indexing or model calls. It enforces a configurable 200 MB default cap (matching Streamlit's existing cap), validates PDF/DOC/DOCX/text/image signatures, and bounds Office archive entries and expanded size. The Streamlit server upload cap is explicitly set to 200 MB.
 
+## Additional owner and request hardening
+- Supabase-authenticated Gateway sessions share a stable opaque owner hash; guest BYOK sessions get a session-specific owner hash. The website identity attachment is opt-in and the Gateway requires its Supabase URL/publishable key to be configured before the website flag is enabled.
+- OpenSearch chunk metadata stores `owner_scope`. Streamlit global uploads, chat attachments, chat history, document lists, summaries, retrieval and deletes are owner-filtered. Legacy records without an owner remain inaccessible rather than being assigned to the first visitor.
+- Both Streamlit upload entry points reject declared oversized files before copying bytes; the central ingestion function rechecks actual byte size/signature/archive limits. A per-owner upload quota (8/hour) and chat quota (30/minute) use Upstash in production and fail closed if shared storage is unavailable.
+- User-controlled uploaded filenames are escaped before HTML rendering. Trusted templates still use `unsafe_allow_html`; maintain the code-review boundary and do not interpolate unescaped data into those templates.
+- Production Upstash credentials are supplied through `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` in Render; local/offline ingestion retains a bounded local-development scope.
+
 ## 20-control assessment
 | # | Control | Result |
 |---|---|---|
 |01|SQL injection|PARTIAL — OpenSearch queries are constructed through client APIs; review every query/filter builder for raw DSL interpolation|
-|02|XSS|PARTIAL — trusted UI templates use escaped HTML for copy actions; review every `unsafe_allow_html` and dynamic Markdown rendering|
+|02|XSS|IMPROVED/PARTIAL — dynamic document labels are HTML-escaped and model text uses Streamlit text rendering; continue reviewing each trusted `unsafe_allow_html` template|
 |03|CSRF|PARTIAL — Streamlit session model, no app-owned cookie-auth API found; validate Streamlit/proxy origin and cookie settings|
 |04|File upload|PARTIAL — server-side size/signature and Office archive bounds are implemented with compatibility tests; malware scanning and deeper parser sandboxing remain external hardening|
-|05|SSRF|PARTIAL — authenticated MCP redirects are disabled and Gateway exchange rejects remote HTTP/private DNS; Katzilla MCP URL remains a trusted operator setting and should be constrained to the approved provider host|
-|06|BOLA/IDOR|PARTIAL — scope filters exist, but full user/tenant identity and ACL authorization are intentionally an upstream boundary|
-|07|Rate limiting|PARTIAL — bounded agent loops/timeouts exist; add edge and per-session limits for expensive model/search calls|
+|05|SSRF|IMPROVED/PARTIAL — Gateway and Katzilla destinations are restricted to approved HTTPS hosts/public DNS; redirects and environment proxy trust are disabled|
+|06|BOLA/IDOR|IMPROVED/PARTIAL — verified Gateway owner scope is enforced for new documents, chats, retrieval, summaries and deletes; legacy unowned data is hidden. This is owner isolation, not a full document ACL/RBAC system|
+|07|Rate limiting|PARTIAL — per-owner Upstash quotas cover upload and chat entry points; add edge/WAF limits and review individual tool-cost quotas|
 |08|Password hashing|N/A — no local password authentication identified|
 |09|MFA|EXTERNAL — enable for GitHub, hosting, OpenSearch and provider administrator accounts|
-|10|Server-side permissions|PARTIAL — document ACL must be enforced before agent execution; client IDs are not authorization|
+|10|Server-side permissions|IMPROVED/PARTIAL — server-derived owner scope filters are enforced before agent retrieval; fine-grained document ACLs and team roles remain out of scope|
 |11|RLS|N/A/PARTIAL — OpenSearch tenant filters are app-level, not database RLS; isolate tenant credentials/index permissions|
 |12|JWT secret|GATEWAY-OWNED — Gateway signs the short-lived session; verify production secret strength/rotation there|
 |13|Server-side API keys|PASS by design — provider/MCP keys are server-side environment settings; validate hosting config|

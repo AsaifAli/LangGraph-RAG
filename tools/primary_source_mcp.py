@@ -10,10 +10,13 @@ keys or the Katzilla key through the model context.
 """
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
+import socket
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlsplit
 
 
 @dataclass(frozen=True)
@@ -52,11 +55,72 @@ class KatzillaMCPClient:
         return self.enabled and bool(self.api_key)
 
     @staticmethod
+    def _validate_destination(url: str) -> None:
+        """Constrain credential-bearing MCP traffic to the approved provider host."""
+        try:
+            parsed = urlsplit(str(url or "").strip())
+            host = (parsed.hostname or "").rstrip(".").lower()
+            port = parsed.port
+        except ValueError:
+            raise ValueError("Katzilla MCP URL is invalid.") from None
+
+        if (
+            not host
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.query
+            or parsed.fragment
+            or parsed.path.rstrip("/") != "/mcp"
+        ):
+            raise ValueError("Katzilla MCP URL is invalid.")
+
+        is_production = (
+            os.getenv("APP_ENV", "").strip().lower() in {"prod", "production"}
+            or os.getenv("RENDER", "").strip().lower() in {"1", "true"}
+            or bool(os.getenv("K_SERVICE"))
+        )
+        local_hosts = {"localhost", "127.0.0.1", "::1"}
+        if not is_production and host in local_hosts:
+            if parsed.scheme not in {"http", "https"}:
+                raise ValueError("Local Katzilla MCP URL must use HTTP or HTTPS.")
+            return
+
+        if parsed.scheme != "https" or port not in {None, 443}:
+            raise ValueError("Katzilla MCP must use standard HTTPS.")
+
+        allowed_hosts = {
+            item.strip().rstrip(".").lower()
+            for item in os.getenv(
+                "KATZILLA_MCP_ALLOWED_HOSTS",
+                "api.katzilla.dev",
+            ).split(",")
+            if item.strip()
+        }
+        if host not in allowed_hosts:
+            raise ValueError("Katzilla MCP host is not approved.")
+
+        try:
+            try:
+                address = ipaddress.ip_address(host)
+                addresses = [address]
+            except ValueError:
+                records = socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)
+                addresses = [
+                    ipaddress.ip_address(record[4][0].split("%", 1)[0])
+                    for record in records
+                ]
+        except (OSError, ValueError):
+            raise ValueError("Katzilla MCP host could not be safely resolved.") from None
+        if not addresses or any(not address.is_global for address in addresses):
+            raise ValueError("Katzilla MCP must resolve only to public addresses.")
+
+    @staticmethod
     def _http_client_options(api_key: str, timeout: Any) -> dict[str, Any]:
         """Build an authenticated MCP transport without forwarding credentials on redirects."""
         return {
             "headers": {"Authorization": f"Bearer {api_key}"},
             "follow_redirects": False,
+            "trust_env": False,
             "timeout": timeout,
         }
 
@@ -105,6 +169,7 @@ class KatzillaMCPClient:
             )
 
         try:
+            self._validate_destination(self.url)
             import httpx
             from mcp import ClientSession
             from mcp.client.streamable_http import streamable_http_client
