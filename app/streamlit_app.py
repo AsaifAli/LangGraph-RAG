@@ -1402,27 +1402,44 @@ def _clear_everything() -> None:
     BEFORE deleting the chat files themselves, since the files being wiped
     below are the only record of which per-chat documents belong to which
     (now-deleted) chat."""
-    for d in list(st.session_state.uploaded_docs):
-        _run_async(delete_document(d["document_id"]))
+    owner_scope = _current_owner_scope()
+    owned_threads = filter_documents_for_owner(
+        st.session_state.chat_store["threads"],
+        owner_scope,
+    )
+    for doc in filter_documents_for_owner(st.session_state.uploaded_docs, owner_scope):
+        _run_async(delete_document(doc["document_id"], owner_scope=owner_scope))
     st.session_state.uploaded_docs = []
     st.session_state.ingested_hashes = set()
     _save_uploaded_docs()
 
-    per_chat_ids = {d["document_id"] for d in st.session_state.chat_uploaded_docs}
-    for t in st.session_state.chat_store["threads"]:
-        per_chat_ids.update(d["document_id"] for d in t.get("uploaded_docs", []))
+    per_chat_docs = filter_documents_for_owner(
+        st.session_state.chat_uploaded_docs,
+        owner_scope,
+    )
+    for thread in owned_threads:
+        per_chat_docs.extend(
+            filter_documents_for_owner(thread.get("uploaded_docs", []), owner_scope)
+        )
+    per_chat_ids = {doc["document_id"] for doc in per_chat_docs}
     for doc_id in per_chat_ids:
-        _run_async(delete_document(doc_id))
+        _run_async(delete_document(doc_id, owner_scope=owner_scope))
     st.session_state.chat_uploaded_docs = []
     st.session_state.chat_ingested_hashes = set()
 
     if st.session_state.built_agent is not None:
-        for t in list(st.session_state.chat_store["threads"]):
-            _run_async(st.session_state.built_agent["agent"].checkpointer.adelete_thread(t["thread_id"]))
-    for f in _CHAT_HISTORY_DIR.glob("*.json"):
-        if f != _UPLOADED_DOCS_PATH:
-            f.unlink(missing_ok=True)
-    st.session_state.chat_store = {"threads": []}
+        for thread in owned_threads:
+            _run_async(
+                st.session_state.built_agent["agent"].checkpointer.adelete_thread(
+                    thread["thread_id"]
+                )
+            )
+    for thread in owned_threads:
+        _chat_file_path(thread["thread_id"]).unlink(missing_ok=True)
+    st.session_state.chat_store["threads"] = [
+        thread for thread in st.session_state.chat_store["threads"]
+        if not owner_scope_matches(thread, owner_scope)
+    ]
     st.session_state.messages = []
     st.session_state.thread_id = uuid.uuid4().hex
 
@@ -2087,7 +2104,13 @@ with st.sidebar:
         if content_hash not in st.session_state.ingested_hashes:
             with st.spinner(f"Adding {sidebar_file.name}..."):
                 try:
-                    result = _run_async(ingest_document(content, source_name=sidebar_file.name))
+                    result = _run_async(
+                        ingest_document(
+                            content,
+                            source_name=sidebar_file.name,
+                            owner_scope=_current_owner_scope(),
+                        )
+                    )
                 except Exception as exc:  # noqa: BLE001 - isolate one upload failure
                     incident_id = log_safe_failure(
                         LOGGER,
@@ -2213,16 +2236,23 @@ def _get_or_build_agent() -> dict:
     valid thread to resume — forcing a fresh one here would silently
     discard that choice."""
     gateway_token = str(st.session_state.get("llm_gateway_session_token", "")).strip()
-    if st.session_state.built_agent is None or st.session_state.get("built_agent_gateway_token", "") != gateway_token:
+    owner_scope = _current_owner_scope()
+    if (
+        st.session_state.built_agent is None
+        or st.session_state.get("built_agent_gateway_token", "") != gateway_token
+        or st.session_state.get("built_agent_owner_scope", "") != owner_scope
+    ):
         checkpointer = _run_async(_build_checkpointer())
         st.session_state.built_agent = build_langgraph_agent(
             document_ids_provider=_document_ids_in_scope,
             document_names_provider=_document_names_in_scope,
+            owner_scope_provider=_current_owner_scope,
             backend=_BACKEND,
             checkpointer=checkpointer,
             gateway_token=gateway_token,
         )
         st.session_state.built_agent_gateway_token = gateway_token
+        st.session_state.built_agent_owner_scope = owner_scope
     return st.session_state.built_agent
 
 
@@ -3007,7 +3037,13 @@ with _main_col:
                 continue  # already attached in this chat — skip silently
             with st.spinner(f"Adding {f.name} to this chat's knowledge base..."):
                 try:
-                    result = _run_async(ingest_document(content, source_name=f.name))
+                    result = _run_async(
+                        ingest_document(
+                            content,
+                            source_name=f.name,
+                            owner_scope=_current_owner_scope(),
+                        )
+                    )
                 except Exception as exc:  # noqa: BLE001 - isolate one upload failure
                     incident_id = log_safe_failure(
                         LOGGER,
