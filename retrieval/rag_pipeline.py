@@ -537,6 +537,10 @@ async def ingest_document(
     if document_id is None:
         document_id = str(uuid.uuid4())
 
+    from shared.upload_security import validate_document_upload
+
+    validate_document_upload(content, source_name)
+
     from shared.multimodal_extractor import (
         IMAGE_SUFFIXES,
         extract_multimodal_sections,
