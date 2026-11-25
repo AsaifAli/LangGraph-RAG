@@ -26,7 +26,7 @@ This is a code/configuration review, not a penetration test or a declaration of 
 |02|XSS|PARTIAL — trusted UI templates use escaped HTML for copy actions; review every `unsafe_allow_html` and dynamic Markdown rendering|
 |03|CSRF|PARTIAL — Streamlit session model, no app-owned cookie-auth API found; validate Streamlit/proxy origin and cookie settings|
 |04|File upload|PARTIAL — Streamlit accepts multiple document/image types; validate actual byte signatures, size and archive expansion limits|
-|05|SSRF|PARTIAL — MCP/gateway endpoints are configured server-side; redirect and private-network protections need tightening|
+|05|SSRF|PARTIAL — authenticated MCP redirects are disabled and Gateway exchange rejects remote HTTP/private DNS; Katzilla MCP URL remains a trusted operator setting and should be constrained to the approved provider host|
 |06|BOLA/IDOR|PARTIAL — scope filters exist, but full user/tenant identity and ACL authorization are intentionally an upstream boundary|
 |07|Rate limiting|PARTIAL — bounded agent loops/timeouts exist; add edge and per-session limits for expensive model/search calls|
 |08|Password hashing|N/A — no local password authentication identified|
