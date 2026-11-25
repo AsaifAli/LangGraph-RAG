@@ -13,7 +13,7 @@ This is a code/configuration review, not a penetration test or a declaration of 
 
 ## Findings requiring attention
 1. **User query logging (Medium): PATCHED in this branch.** `tools/web_search_tool.py` no longer prints user queries, provider payloads, response content or source snippets. `tests/test_web_search_logging.py` guards against regression. Other logging/traceback paths still require a broader review.
-2. **MCP redirect policy (High):** `tools/primary_source_mcp.py` constructs an authenticated HTTP client with `follow_redirects=True`. The MCP URL is environment-configured rather than user-controlled, but credentials should not be sent through redirects. Disable redirects and test that a redirect fails closed.
+2. **MCP redirect policy (High): PATCHED in this branch.** `tools/primary_source_mcp.py` now sets `follow_redirects=False` on the authenticated client. `tests/test_primary_source_mcp.py` verifies that policy.
 3. **Gateway URL trust (High):** `app/gateway_handoff.py` accepts both HTTP and HTTPS for the configured gateway URL and does not pin an expected host or reject loopback/private destinations. Require HTTPS outside local development and restrict the production host to the configured Gateway origin. Do not accept this URL from a chat/user payload.
 4. **Container privilege (Medium):** the checked-in Dockerfiles do not declare a non-root runtime user. Use an unprivileged UID and ensure only runtime-writable paths (such as chat history/cache) are owned by it.
 5. **Diagnostic disclosure (Medium):** the Streamlit turn failure path displays exception details/tracebacks in an expandable UI block. Keep detailed diagnostics in access-controlled logs with redaction; show a generic correlation identifier to the user.
