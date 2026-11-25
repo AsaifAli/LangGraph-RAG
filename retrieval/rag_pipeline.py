@@ -553,8 +553,16 @@ async def ingest_document(
         document_id = str(uuid.uuid4())
 
     from shared.upload_security import validate_document_upload
+    from shared.rate_limit import owner_rate_limiter
 
     validate_document_upload(content, source_name)
+    await asyncio.to_thread(
+        owner_rate_limiter.enforce,
+        owner_scope,
+        "upload",
+        limit=8,
+        window_seconds=3600,
+    )
 
     from shared.multimodal_extractor import (
         IMAGE_SUFFIXES,
