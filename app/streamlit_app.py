@@ -110,6 +110,7 @@ from app.demo_onboarding import render_demo_onboarding  # noqa: E402
 from shared.security_logging import log_safe_failure  # noqa: E402
 from shared.document_access import filter_documents_for_owner, owner_scope_matches  # noqa: E402
 from shared.rate_limit import RateLimitBackendUnavailable, RateLimitExceeded, owner_rate_limiter  # noqa: E402
+from shared.upload_security import validate_declared_upload_size  # noqa: E402
 
 from app.gateway_handoff import (  # noqa: E402
     GatewayHandoffError,
@@ -2100,6 +2101,12 @@ with st.sidebar:
     # re-submit once on the next reconnect), so content-hash dedup below is
     # the actual guarantee, not just the key bump.
     if sidebar_file is not None:
+        try:
+            validate_declared_upload_size(getattr(sidebar_file, "size", None))
+        except ValueError as exc:
+            st.error(str(exc))
+            st.session_state.sidebar_uploader_key += 1
+            st.rerun()
         content = sidebar_file.read()
         content_hash = hashlib.sha256(content).hexdigest()
         if content_hash not in st.session_state.ingested_hashes:
@@ -3032,6 +3039,17 @@ with _main_col:
         # chat_ingested_hashes/_record_chat_upload, not the global ones the
         # sidebar uploader uses.
         for f in files:
+            try:
+                validate_declared_upload_size(getattr(f, "size", None))
+            except ValueError as exc:
+                st.session_state.messages.append(
+                    {
+                        "role": "assistant",
+                        "content": f"Attachment {html_lib.escape(str(f.name))} was not added: {exc}",
+                        "kind": "notice",
+                    }
+                )
+                continue
             content = f.read()
             content_hash = hashlib.sha256(content).hexdigest()
             if content_hash in st.session_state.chat_ingested_hashes:
