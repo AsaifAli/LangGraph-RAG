@@ -96,7 +96,12 @@ class OwnerRateLimiter:
         window_seconds: int,
     ) -> tuple[bool, int]:
         scope = str(owner_scope or "").strip().lower()
-        if len(scope) != 64 or any(ch not in "0123456789abcdef" for ch in scope):
+        is_production = self._is_production()
+        valid_hash = (
+            len(scope) == 64
+            and all(ch in "0123456789abcdef" for ch in scope)
+        )
+        if not valid_hash and (scope != "local-development" or is_production):
             raise ValueError("A verified owner scope is required for rate limiting.")
         action_key = "".join(ch for ch in str(action).lower() if ch.isalnum() or ch in "_-")[:32]
         if not action_key:
@@ -105,7 +110,7 @@ class OwnerRateLimiter:
         key = f"evidenceflow:ratelimit:v1:{action_key}:{scope_hash}"
         safe_limit = max(1, int(limit))
         safe_window = max(1, int(window_seconds))
-        if not self._is_production():
+        if not is_production:
             return self._local.check(key, safe_limit, safe_window)
         try:
             result = self._client_for_production().eval(
