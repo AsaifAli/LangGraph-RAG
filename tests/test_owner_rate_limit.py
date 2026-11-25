@@ -53,3 +53,28 @@ def test_excess_owner_requests_raise_retry_after():
         limiter.enforce(owner, "chat", limit=1, window_seconds=60)
     assert error.value.action == "chat"
     assert error.value.retry_after >= 1
+
+
+
+def test_local_development_ingestion_scope_remains_usable_outside_production(monkeypatch):
+    monkeypatch.delenv("APP_ENV", raising=False)
+    monkeypatch.delenv("RENDER", raising=False)
+    limiter = OwnerRateLimiter()
+    assert limiter.check(
+        "local-development",
+        "upload",
+        limit=2,
+        window_seconds=60,
+    ) == (True, 0)
+
+
+def test_local_development_scope_is_rejected_in_production(monkeypatch):
+    monkeypatch.setenv("APP_ENV", "production")
+    limiter = OwnerRateLimiter()
+    with pytest.raises(ValueError, match="verified owner scope"):
+        limiter.check(
+            "local-development",
+            "upload",
+            limit=2,
+            window_seconds=60,
+        )
