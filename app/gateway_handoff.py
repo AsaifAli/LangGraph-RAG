@@ -22,6 +22,7 @@ EXCHANGE_TIMEOUT_SECONDS = 8
 MAX_RESPONSE_BYTES = 64 * 1024
 
 CODE_PATTERN = re.compile(r"^[A-Za-z0-9_-]{32,128}$")
+OWNER_SCOPE_PATTERN = re.compile(r"^[a-f0-9]{64}$")
 PROJECT_PATTERN = re.compile(r"^[a-z0-9-]{1,80}$")
 
 
@@ -310,10 +311,17 @@ def exchange_handoff_code(
             "The gateway returned an invalid session expiry."
         )
 
+    owner_scope = payload.get("owner_scope")
+    if not isinstance(owner_scope, str) or not OWNER_SCOPE_PATTERN.fullmatch(owner_scope):
+        raise GatewayHandoffError(
+            "The gateway did not return a valid document access scope."
+        )
+
     return {
         "access_token": token,
         "expires_in": expires_in,
         "target_project": target_project,
+        "owner_scope": owner_scope,
         "provider": str(payload.get("provider") or ""),
         "model": str(payload.get("model") or ""),
     }
