@@ -55,6 +55,8 @@ services:
         sync: false
       - key: KATZILLA_ENABLED
         value: "true"
+      - key: KATZILLA_MCP_ALLOWED_HOSTS
+        value: api.katzilla.dev
       - key: KATZILLA_API_KEY
         sync: false
       - key: EVALUATION_HARNESS_URL
