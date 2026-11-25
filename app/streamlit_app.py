@@ -108,6 +108,7 @@ if str(_POC_ROOT) not in sys.path:
     sys.path.insert(0, str(_POC_ROOT))
 from app.demo_onboarding import render_demo_onboarding  # noqa: E402
 from shared.security_logging import log_safe_failure  # noqa: E402
+from shared.document_access import filter_documents_for_owner, owner_scope_matches  # noqa: E402
 
 from app.gateway_handoff import (  # noqa: E402
     GatewayHandoffError,
@@ -202,12 +203,54 @@ _LEGACY_HANDOFF_PARAM = "portfolio_llm_session"
 
 def _clear_portfolio_gateway_session() -> None:
     st.session_state["llm_gateway_session_token"] = ""
+    st.session_state["gateway_owner_scope"] = ""
+    st.session_state.pop("_local_document_owner_scope", None)
+    st.session_state.pop("built_agent_owner_scope", None)
     st.session_state.pop(
         "llm_gateway_session_expires_at",
         None,
     )
     st.session_state.pop("built_agent", None)
     st.session_state.pop("built_agent_gateway_token", None)
+
+
+def _current_owner_scope() -> str:
+    """Return the active opaque owner scope, or an isolated local demo scope."""
+    candidate = str(st.session_state.get("gateway_owner_scope", "") or "").strip().lower()
+    if re.fullmatch(r"[a-f0-9]{64}", candidate):
+        return candidate
+    local_scope = st.session_state.get("_local_document_owner_scope")
+    if not isinstance(local_scope, str) or not re.fullmatch(r"[a-f0-9]{64}", local_scope):
+        local_scope = uuid.uuid4().hex + uuid.uuid4().hex
+        st.session_state["_local_document_owner_scope"] = local_scope
+    return local_scope
+
+
+def _activate_gateway_owner_scope(owner_scope: str) -> None:
+    previous = str(st.session_state.get("gateway_owner_scope", "") or "")
+    if previous and previous != owner_scope:
+        # A browser session can be re-used after a different user signs in.
+        # Clear all previously loaded private chat/document state before the
+        # next script section repopulates it from that owner's own registry.
+        for key in (
+            "messages",
+            "chat_store",
+            "uploaded_docs",
+            "chat_uploaded_docs",
+            "chat_ingested_hashes",
+            "ingested_hashes",
+            "thread_id",
+            "built_agent",
+            "built_agent_gateway_token",
+            "built_agent_owner_scope",
+        ):
+            st.session_state.pop(key, None)
+        try:
+            if "chat" in st.query_params:
+                del st.query_params["chat"]
+        except Exception:
+            pass
+    st.session_state["gateway_owner_scope"] = owner_scope
 
 
 def _handle_portfolio_handoff() -> None:
@@ -238,6 +281,17 @@ def _handle_portfolio_handoff() -> None:
         current_token = str(
             st.session_state.get("llm_gateway_session_token", "")
         ).strip()
+
+        if current_token and not re.fullmatch(
+            r"[a-f0-9]{64}",
+            str(st.session_state.get("gateway_owner_scope", "") or ""),
+        ):
+            _clear_portfolio_gateway_session()
+            st.session_state["gateway_handoff_error"] = (
+                "Your EvidenceFlow session predates document access isolation. "
+                "Return to the portfolio and launch a fresh session."
+            )
+            return
 
         if (
             current_token
@@ -285,6 +339,16 @@ def _handle_portfolio_handoff() -> None:
     except GatewayHandoffError as exc:
         st.session_state["gateway_handoff_error"] = str(exc)
         return
+
+    owner_scope = str(exchanged.get("owner_scope") or "").strip().lower()
+    if not re.fullmatch(r"[a-f0-9]{64}", owner_scope):
+        _clear_portfolio_gateway_session()
+        st.session_state["gateway_handoff_error"] = (
+            "The portfolio did not provide a valid document access scope. "
+            "Please launch EvidenceFlow again."
+        )
+        return
+    _activate_gateway_owner_scope(owner_scope)
 
     st.session_state["llm_gateway_session_token"] = (
         exchanged["access_token"]
