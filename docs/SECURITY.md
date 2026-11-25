@@ -16,7 +16,7 @@ This is a code/configuration review, not a penetration test or a declaration of 
 2. **MCP redirect policy (High): PATCHED in this branch.** `tools/primary_source_mcp.py` now sets `follow_redirects=False` on the authenticated client. `tests/test_primary_source_mcp.py` verifies that policy.
 3. **Gateway URL trust (High): PATCHED in this branch.** `app/gateway_handoff.py` requires HTTPS and public DNS destinations for remote gateways, rejects nonstandard external ports, and permits loopback/host.docker.internal only in non-production local development. Gateway URL remains server-side configuration, never a chat payload.
 4. **Container privilege (Medium):** the checked-in Dockerfiles do not declare a non-root runtime user. Use an unprivileged UID and ensure only runtime-writable paths (such as chat history/cache) are owned by it.
-5. **Diagnostic disclosure (Medium):** the Streamlit turn failure path displays exception details/tracebacks in an expandable UI block. Keep detailed diagnostics in access-controlled logs with redaction; show a generic correlation identifier to the user.
+5. **Diagnostic disclosure (Medium): PATCHED in this branch.** Upload and agent-turn failures now emit only a generated incident reference and exception class to application logs. The UI displays a generic retry message with that reference; raw exception messages and tracebacks are no longer rendered or logged.
 6. **Upload surface: PATCHED in this branch.** The central `retrieval/rag_pipeline.py::ingest_document` path calls `shared/upload_security.py` before parsers, image processing, indexing or model calls. It enforces a configurable 200 MB default cap (matching Streamlit's existing cap), validates PDF/DOC/DOCX/text/image signatures, and bounds Office archive entries and expanded size. The Streamlit server upload cap is explicitly set to 200 MB.
 
 ## 20-control assessment
@@ -25,7 +25,7 @@ This is a code/configuration review, not a penetration test or a declaration of 
 |01|SQL injection|PARTIAL — OpenSearch queries are constructed through client APIs; review every query/filter builder for raw DSL interpolation|
 |02|XSS|PARTIAL — trusted UI templates use escaped HTML for copy actions; review every `unsafe_allow_html` and dynamic Markdown rendering|
 |03|CSRF|PARTIAL — Streamlit session model, no app-owned cookie-auth API found; validate Streamlit/proxy origin and cookie settings|
-|04|File upload|PARTIAL — Streamlit accepts multiple document/image types; validate actual byte signatures, size and archive expansion limits|
+|04|File upload|PARTIAL — server-side size/signature and Office archive bounds are implemented with compatibility tests; malware scanning and deeper parser sandboxing remain external hardening|
 |05|SSRF|PARTIAL — authenticated MCP redirects are disabled and Gateway exchange rejects remote HTTP/private DNS; Katzilla MCP URL remains a trusted operator setting and should be constrained to the approved provider host|
 |06|BOLA/IDOR|PARTIAL — scope filters exist, but full user/tenant identity and ACL authorization are intentionally an upstream boundary|
 |07|Rate limiting|PARTIAL — bounded agent loops/timeouts exist; add edge and per-session limits for expensive model/search calls|
@@ -40,7 +40,7 @@ This is a code/configuration review, not a penetration test or a declaration of 
 |16|Strict CORS|PARTIAL — Streamlit/proxy origin policy is deployment-owned; configure exact HTTPS hosts|
 |17|Webhook signatures|N/A — no webhook receiver identified|
 |18|Source maps|N/A — no client bundler/source-map build pipeline identified|
-|19|Clean logs|FAIL/PARTIAL — raw query debug prints and expanded traceback display are present; redact/remove before production|
+|19|Clean logs|PARTIAL — raw search debug prints and user-visible raw exception messages/tracebacks were removed; broader review of all log call sites and deployment log retention remains|
 |20|Dependency patching|UNVERIFIED — scan resolved dependencies and container OS packages; pinned versions alone do not prove safety|
 
 ## External deployment actions
