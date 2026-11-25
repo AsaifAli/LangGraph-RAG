@@ -32,6 +32,18 @@ def _max_upload_bytes() -> int:
     return int(megabytes * 1024 * 1024)
 
 
+def validate_declared_upload_size(size: int | None) -> None:
+    """Reject oversized Streamlit uploads before copying their bytes into app memory."""
+    if size is None:
+        return
+    try:
+        declared = int(size)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("Uploaded document has an invalid declared size.") from exc
+    if declared < 0 or declared > _max_upload_bytes():
+        raise ValueError("Uploaded document exceeds the configured size limit.")
+
+
 def _validate_office_archive(content: bytes, *, suffix: str, max_bytes: int) -> None:
     expected_member = "word/document.xml" if suffix == ".docx" else "xl/workbook.xml"
     try:
