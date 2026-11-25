@@ -241,7 +241,6 @@ class WebSearchTool:
         }
         if self.time_range:
             kwargs["time_range"] = self.time_range
-        print(f"Tavily search kwargs: {kwargs}")
         return self._client.search(**kwargs)
 
     async def search(self, query: str) -> str:
@@ -251,7 +250,6 @@ class WebSearchTool:
                 "Web search is not available: install `tavily-python`. "
                 "Example: pip install tavily-python"
             )
-        print(f"WebSearchTool.search called with query: {query}")
         query = await _rehydrate_noop(
             query,
             pool=self.pool,
@@ -260,7 +258,6 @@ class WebSearchTool:
             encrypted_token=self.encrypted_token,
             is_temp=self.is_temp,
         )
-        print(f"rehydrated query: {query}")
         stripped = (query or "").strip()
         if not stripped:
             return "No search query was provided."
@@ -280,21 +277,13 @@ class WebSearchTool:
         best_response: Any | None = None  # Winning raw response, for source capture
         for topic, response in zip(_DUAL_SEARCH_TOPICS, responses):
             if isinstance(response, Exception):
-                print(f"[TAVILY_ERROR] topic={topic} query={stripped!r} error={response!r}")
                 continue
-            print(f"Web search topic={topic} type: {type(response)}")
-            print(f"Web search topic={topic} result: {response}")
             if isinstance(response, dict):
                 resolved = response.get("auto_parameters")
-                print(f"Tavily[{topic}] auto_parameters resolved (full): {resolved}")
                 if isinstance(resolved, dict):
-                    print(f"Tavily[{topic}] resolved topic: {resolved.get('topic')}")
-                    print(f"Tavily[{topic}] resolved search_depth: {resolved.get('search_depth')}")
-                    print(f"Tavily[{topic}] resolved time_range: {resolved.get('time_range')}")
 
             score = self._effective_score(response)
             text = self._answer_from_tavily_response(response)
-            print(f"Tavily[{topic}] effective_score={score:.4f} has_text={bool(text.strip())}")
             # `>` (not `>=`) preserves the topic order in _DUAL_SEARCH_TOPICS as
             # the tie-break: "general" is scored first and kept on ties.
             if best is None or score > best[0]:
@@ -302,11 +291,9 @@ class WebSearchTool:
                 best_response = response
 
         if best is None:
-            print(f"[TAVILY_ERROR] all topics failed query={stripped!r}")
             return "Web search is temporarily unavailable. Please try again later."
 
         best_score, best_topic, best_text = best
-        print(f"Tavily WINNER topic={best_topic} score={best_score:.4f}")
 
         # Capture the winning response's structured
         # sources (url/title/snippet/score) for web citations. Accumulate across any
@@ -316,12 +303,11 @@ class WebSearchTool:
                 self._sources_from_tavily_response(best_response, self.max_results)
             )
         except Exception as _src_exc:
-            print(f"[TAVILY_SOURCES] capture failed: {_src_exc!r}")
 
         if not best_text.strip():
             return (
                 _WEB_PREFIX.rstrip()
                 + "Web search returned no usable text for this query."
             )
-        print(f"_WEB_PREFIX + text:: {(_WEB_PREFIX + best_text)}")
         return _WEB_PREFIX + best_text
+
