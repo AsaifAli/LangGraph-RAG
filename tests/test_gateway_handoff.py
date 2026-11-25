@@ -14,6 +14,11 @@ from app.gateway_handoff import (
 
 @pytest.fixture(autouse=True)
 def _public_dns_for_gateway_tests(monkeypatch):
+    monkeypatch.setenv(
+        "PORTFOLIO_SESSION_GATEWAY_ALLOWED_HOSTS",
+        "portfolio-llm-gateway.onrender.com,gateway.example.com",
+    )
+
     def resolve_public(*args, **kwargs):
         return [
             (
@@ -269,4 +274,17 @@ def test_exchange_rejects_missing_or_invalid_owner_scope(monkeypatch):
         exchange_handoff_code(
             "a" * 43,
             gateway_url="https://gateway.example.com",
+        )
+
+
+
+def test_gateway_handoff_rejects_unapproved_public_host(monkeypatch):
+    monkeypatch.setenv(
+        "PORTFOLIO_SESSION_GATEWAY_ALLOWED_HOSTS",
+        "portfolio-llm-gateway.onrender.com",
+    )
+    with pytest.raises(GatewayHandoffError, match="not approved"):
+        exchange_handoff_code(
+            "a" * 43,
+            gateway_url="https://attacker.example.com",
         )
