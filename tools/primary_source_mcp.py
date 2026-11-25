@@ -51,6 +51,15 @@ class KatzillaMCPClient:
     def available(self) -> bool:
         return self.enabled and bool(self.api_key)
 
+    @staticmethod
+    def _http_client_options(api_key: str, timeout: Any) -> dict[str, Any]:
+        """Build an authenticated MCP transport without forwarding credentials on redirects."""
+        return {
+            "headers": {"Authorization": f"Bearer {api_key}"},
+            "follow_redirects": False,
+            "timeout": timeout,
+        }
+
     async def _list_tools(self, session) -> list[Any]:
         if self._tool_cache is None:
             page = await session.list_tools()
@@ -100,9 +109,9 @@ class KatzillaMCPClient:
             from mcp import ClientSession
             from mcp.client.streamable_http import streamable_http_client
 
-            headers = {"Authorization": f"Bearer {self.api_key}"}
             timeout = httpx.Timeout(45.0, connect=10.0, read=45.0, write=15.0, pool=10.0)
-            async with httpx.AsyncClient(headers=headers, follow_redirects=True, timeout=timeout) as http_client:
+            client_options = self._http_client_options(self.api_key, timeout)
+            async with httpx.AsyncClient(**client_options) as http_client:
                 async with streamable_http_client(self.url, http_client=http_client) as transport:
                     read_stream, write_stream = transport[0], transport[1]
                     async with ClientSession(read_stream, write_stream) as session:
