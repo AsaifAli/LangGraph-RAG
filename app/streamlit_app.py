@@ -937,43 +937,64 @@ def _load_chat_store() -> dict:
     return {"threads": threads}
 
 
+def _owner_uploaded_docs_path() -> Path:
+    """Return an owner-specific registry path without exposing owner IDs."""
+    scope_digest = hashlib.sha256(_current_owner_scope().encode("utf-8")).hexdigest()
+    return _CHAT_HISTORY_DIR / "owners" / scope_digest / "uploaded_documents.json"
+
+
 def _load_uploaded_docs() -> list[dict]:
-    """Global document registry, `chat_history/uploaded_documents.json` —
-    by explicit request, uploads are no longer scoped to the chat they
-    happened in (see module docstring for why). One-time migration on first
-    load if this file doesn't exist yet: earlier versions stored each
-    chat's uploads in that chat's OWN `uploaded_docs` field, which would
-    otherwise strand any already-uploaded document with no path back into
-    scope — aggregated here instead (deduped by document_id) so nothing
-    already in OpenSearch becomes silently unreachable."""
-    if _UPLOADED_DOCS_PATH.exists():
+    """Load only this owner's persisted global upload registry.
+
+    Pre-isolation legacy uploads without a verified owner are intentionally
+    kept in the legacy file but never assigned to a new visitor. If records
+    already carry this exact owner scope, they can be copied into the new
+    owner-specific registry without exposing other records.
+    """
+    owner_path = _owner_uploaded_docs_path()
+    if owner_path.exists():
         try:
-            return json.loads(_UPLOADED_DOCS_PATH.read_text(encoding="utf-8"))
-        except Exception:  # noqa: BLE001 - corrupt/partial file, start fresh rather than crash the app
+            raw = json.loads(owner_path.read_text(encoding="utf-8"))
+            return filter_documents_for_owner(raw if isinstance(raw, list) else [], _current_owner_scope())
+        except Exception:  # noqa: BLE001 - corrupt registry is handled as empty
             return []
 
-    migrated: dict[str, dict] = {}
-    for f in _CHAT_HISTORY_DIR.glob("*.json"):
-        if f == _UPLOADED_DOCS_PATH:
+    candidates: list[dict] = []
+    if _UPLOADED_DOCS_PATH.exists():
+        try:
+            raw = json.loads(_UPLOADED_DOCS_PATH.read_text(encoding="utf-8"))
+            if isinstance(raw, list):
+                candidates.extend(raw)
+        except Exception:  # noqa: BLE001 - legacy file is not trusted
+            pass
+
+    # Preserve already-tagged owner records from older per-chat registries.
+    for path in _CHAT_HISTORY_DIR.glob("*.json"):
+        if path == _UPLOADED_DOCS_PATH:
             continue
         try:
-            thread = json.loads(f.read_text(encoding="utf-8"))
+            thread = json.loads(path.read_text(encoding="utf-8"))
         except Exception:  # noqa: BLE001
             continue
-        for doc in thread.get("uploaded_docs", []) or []:
-            migrated.setdefault(doc["document_id"], doc)
-    docs = list(migrated.values())
-    if docs:
-        _CHAT_HISTORY_DIR.mkdir(parents=True, exist_ok=True)
-        _UPLOADED_DOCS_PATH.write_text(json.dumps(docs, indent=2), encoding="utf-8")
-    return docs
+        if isinstance(thread, dict):
+            candidates.extend(thread.get("uploaded_docs", []) or [])
+
+    owned = filter_documents_for_owner(candidates, _current_owner_scope())
+    if owned:
+        owner_path.parent.mkdir(parents=True, exist_ok=True)
+        owner_path.write_text(json.dumps(owned, indent=2), encoding="utf-8")
+    return owned
 
 
 def _save_uploaded_docs() -> None:
-    _CHAT_HISTORY_DIR.mkdir(parents=True, exist_ok=True)
-    _UPLOADED_DOCS_PATH.write_text(
-        json.dumps(st.session_state.uploaded_docs, indent=2), encoding="utf-8"
+    owner_path = _owner_uploaded_docs_path()
+    owner_path.parent.mkdir(parents=True, exist_ok=True)
+    owned = filter_documents_for_owner(
+        st.session_state.uploaded_docs,
+        _current_owner_scope(),
     )
+    st.session_state.uploaded_docs = owned
+    owner_path.write_text(json.dumps(owned, indent=2), encoding="utf-8")
 
 
 def _messages_to_jsonable(messages: list[dict]) -> list[dict]:
@@ -1018,7 +1039,11 @@ st.session_state.setdefault("messages", [])  # [{"role": "user"|"assistant", "co
 st.session_state.setdefault("evidence_open", False)
 st.session_state.setdefault("selected_evidence_id", None)
 st.session_state.setdefault("evidence_checks", {})
-st.session_state.setdefault("uploaded_docs", _load_uploaded_docs())  # GLOBAL (sidebar uploader) — see module docstring
+st.session_state.setdefault("uploaded_docs", _load_uploaded_docs())  # GLOBAL within the active owner scope
+st.session_state.uploaded_docs = filter_documents_for_owner(
+    st.session_state.uploaded_docs,
+    _current_owner_scope(),
+)
 st.session_state.setdefault("sidebar_uploader_key", 0)  # bumped after each ingest to reset the widget
 st.session_state.setdefault("built_agent", None)
 # Seeded from the persisted registry, not just an empty set — a file already
@@ -1029,6 +1054,12 @@ st.session_state.setdefault(
     {d["content_hash"] for d in st.session_state.uploaded_docs if d.get("content_hash")},
 )
 st.session_state.setdefault("chat_store", _load_chat_store())  # {"threads": [{thread_id, title, messages, ...}]}
+# A browser may present a guessed/stale chat ID. Only owner-tagged chats for
+# the current Gateway scope participate in resume, list, switch or delete.
+st.session_state.chat_store["threads"] = filter_documents_for_owner(
+    st.session_state.chat_store.get("threads", []),
+    _current_owner_scope(),
+)
 
 # Active thread persisted across a real browser REFRESH, not just a
 # same-tab rerun. `st.session_state` does not survive a hard reload — a
@@ -1065,7 +1096,10 @@ if "chat_uploaded_docs" not in st.session_state:
         (t for t in st.session_state.chat_store["threads"] if t["thread_id"] == st.session_state.thread_id),
         None,
     )
-    st.session_state.chat_uploaded_docs = list((_current_thread or {}).get("uploaded_docs", []))
+    st.session_state.chat_uploaded_docs = filter_documents_for_owner(
+        (_current_thread or {}).get("uploaded_docs", []),
+        _current_owner_scope(),
+    )
 st.session_state.setdefault(
     "chat_ingested_hashes",
     {d["content_hash"] for d in st.session_state.chat_uploaded_docs if d.get("content_hash")},
@@ -1368,8 +1402,16 @@ def _document_ids_in_scope() -> list[str]:
     builds an empty OpenSearch document filter rather than expanding scope,
     not "unrestricted" — no separate empty-list guard needed here or in
     retrieval."""
-    return [d["document_id"] for d in st.session_state.uploaded_docs] + [
-        d["document_id"] for d in st.session_state.chat_uploaded_docs
+    global_docs = filter_documents_for_owner(
+        st.session_state.uploaded_docs,
+        _current_owner_scope(),
+    )
+    chat_docs = filter_documents_for_owner(
+        st.session_state.chat_uploaded_docs,
+        _current_owner_scope(),
+    )
+    return [d["document_id"] for d in global_docs] + [
+        d["document_id"] for d in chat_docs
     ]
 
 
@@ -1381,8 +1423,16 @@ def _document_names_in_scope() -> dict[str, str]:
     a whole-document summarization request. Read live, same as
     `_document_ids_in_scope`, so a newly uploaded document's name is
     available immediately."""
-    names = {d["document_id"]: d["name"] for d in st.session_state.uploaded_docs}
-    names.update({d["document_id"]: d["name"] for d in st.session_state.chat_uploaded_docs})
+    global_docs = filter_documents_for_owner(
+        st.session_state.uploaded_docs,
+        _current_owner_scope(),
+    )
+    chat_docs = filter_documents_for_owner(
+        st.session_state.chat_uploaded_docs,
+        _current_owner_scope(),
+    )
+    names = {d["document_id"]: d["name"] for d in global_docs}
+    names.update({d["document_id"]: d["name"] for d in chat_docs})
     return names
 
 
@@ -1814,11 +1864,15 @@ def _render_message_meta(meta: dict, idx: int) -> None:
 
 
 def _record_upload(name: str, document_id: str, chunk_count: int, content_hash: str | None = None) -> None:
-    """GLOBAL upload record (sidebar uploader only — see module docstring).
-    Persisted immediately to its own file, independent of any one chat's
-    own save."""
+    """Owner-scoped global upload record, independent of a single chat."""
     st.session_state.uploaded_docs.append(
-        {"name": name, "document_id": document_id, "chunk_count": chunk_count, "content_hash": content_hash}
+        {
+            "name": name,
+            "document_id": document_id,
+            "chunk_count": chunk_count,
+            "content_hash": content_hash,
+            "owner_scope": _current_owner_scope(),
+        }
     )
     _save_uploaded_docs()  # global registry — persisted immediately, not tied to any one chat's save
     st.session_state.messages.append(
@@ -1840,7 +1894,13 @@ def _record_chat_upload(name: str, document_id: str, chunk_count: int, content_h
     `_persist_current_chat()` after every turn/attach, which is what
     actually writes `chat_uploaded_docs` into this thread's own file."""
     st.session_state.chat_uploaded_docs.append(
-        {"name": name, "document_id": document_id, "chunk_count": chunk_count, "content_hash": content_hash}
+        {
+            "name": name,
+            "document_id": document_id,
+            "chunk_count": chunk_count,
+            "content_hash": content_hash,
+            "owner_scope": _current_owner_scope(),
+        }
     )
     st.session_state.messages.append(
         {
