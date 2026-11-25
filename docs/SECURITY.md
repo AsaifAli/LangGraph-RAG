@@ -14,10 +14,10 @@ This is a code/configuration review, not a penetration test or a declaration of 
 ## Findings requiring attention
 1. **User query logging (Medium): PATCHED in this branch.** `tools/web_search_tool.py` no longer prints user queries, provider payloads, response content or source snippets. `tests/test_web_search_logging.py` guards against regression. Other logging/traceback paths still require a broader review.
 2. **MCP redirect policy (High): PATCHED in this branch.** `tools/primary_source_mcp.py` now sets `follow_redirects=False` on the authenticated client. `tests/test_primary_source_mcp.py` verifies that policy.
-3. **Gateway URL trust (High):** `app/gateway_handoff.py` accepts both HTTP and HTTPS for the configured gateway URL and does not pin an expected host or reject loopback/private destinations. Require HTTPS outside local development and restrict the production host to the configured Gateway origin. Do not accept this URL from a chat/user payload.
+3. **Gateway URL trust (High): PATCHED in this branch.** `app/gateway_handoff.py` requires HTTPS and public DNS destinations for remote gateways, rejects nonstandard external ports, and permits loopback/host.docker.internal only in non-production local development. Gateway URL remains server-side configuration, never a chat payload.
 4. **Container privilege (Medium):** the checked-in Dockerfiles do not declare a non-root runtime user. Use an unprivileged UID and ensure only runtime-writable paths (such as chat history/cache) are owned by it.
 5. **Diagnostic disclosure (Medium):** the Streamlit turn failure path displays exception details/tracebacks in an expandable UI block. Keep detailed diagnostics in access-controlled logs with redaction; show a generic correlation identifier to the user.
-6. **Upload surface:** Streamlit accepts user files. Enforce size limits before reading all bytes, validate actual file type/signature and archive contents server-side, and reject malformed or decompression-bomb-like inputs.
+6. **Upload surface: PATCHED in this branch.** The central `retrieval/rag_pipeline.py::ingest_document` path calls `shared/upload_security.py` before parsers, image processing, indexing or model calls. It enforces a configurable 200 MB default cap (matching Streamlit's existing cap), validates PDF/DOC/DOCX/text/image signatures, and bounds Office archive entries and expanded size. The Streamlit server upload cap is explicitly set to 200 MB.
 
 ## 20-control assessment
 | # | Control | Result |
@@ -26,7 +26,7 @@ This is a code/configuration review, not a penetration test or a declaration of 
 |02|XSS|PARTIAL — trusted UI templates use escaped HTML for copy actions; review every `unsafe_allow_html` and dynamic Markdown rendering|
 |03|CSRF|PARTIAL — Streamlit session model, no app-owned cookie-auth API found; validate Streamlit/proxy origin and cookie settings|
 |04|File upload|PARTIAL — Streamlit accepts multiple document/image types; validate actual byte signatures, size and archive expansion limits|
-|05|SSRF|PARTIAL — MCP/gateway endpoints are configured server-side; redirect and private-network protections need tightening|
+|05|SSRF|PARTIAL — authenticated MCP redirects are disabled and Gateway exchange rejects remote HTTP/private DNS; Katzilla MCP URL remains a trusted operator setting and should be constrained to the approved provider host|
 |06|BOLA/IDOR|PARTIAL — scope filters exist, but full user/tenant identity and ACL authorization are intentionally an upstream boundary|
 |07|Rate limiting|PARTIAL — bounded agent loops/timeouts exist; add edge and per-session limits for expensive model/search calls|
 |08|Password hashing|N/A — no local password authentication identified|
