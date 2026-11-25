@@ -207,13 +207,28 @@ def _clear_portfolio_gateway_session() -> None:
     st.session_state["llm_gateway_session_token"] = ""
     st.session_state["gateway_owner_scope"] = ""
     st.session_state.pop("_local_document_owner_scope", None)
-    st.session_state.pop("built_agent_owner_scope", None)
+    for key in (
+        "messages",
+        "chat_store",
+        "uploaded_docs",
+        "chat_uploaded_docs",
+        "chat_ingested_hashes",
+        "ingested_hashes",
+        "thread_id",
+        "built_agent_owner_scope",
+        "built_agent",
+        "built_agent_gateway_token",
+    ):
+        st.session_state.pop(key, None)
     st.session_state.pop(
         "llm_gateway_session_expires_at",
         None,
     )
-    st.session_state.pop("built_agent", None)
-    st.session_state.pop("built_agent_gateway_token", None)
+    try:
+        if "chat" in st.query_params:
+            del st.query_params["chat"]
+    except Exception:
+        pass
 
 
 def _current_owner_scope() -> str:
