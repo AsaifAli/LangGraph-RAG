@@ -88,7 +88,7 @@ def validate_document_upload(content: bytes, source_name: str) -> None:
             raise ValueError("File contents do not match PDF format.")
         return
 
-    if suffix in {".docx", ".xlsx"}:
+    if suffix == ".docx":
         _validate_office_archive(content, suffix=suffix, max_bytes=max_bytes)
         return
 
