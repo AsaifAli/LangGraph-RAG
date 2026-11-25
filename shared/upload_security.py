@@ -22,7 +22,7 @@ _MAX_IMAGE_PIXELS = 100_000_000
 
 
 def _max_upload_bytes() -> int:
-    raw_value = os.getenv("MAX_DOCUMENT_UPLOAD_MB", "50").strip()
+    raw_value = os.getenv("MAX_DOCUMENT_UPLOAD_MB", "200").strip()
     try:
         megabytes = float(raw_value)
     except ValueError as exc:
