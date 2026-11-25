@@ -278,10 +278,6 @@ class WebSearchTool:
         for topic, response in zip(_DUAL_SEARCH_TOPICS, responses):
             if isinstance(response, Exception):
                 continue
-            if isinstance(response, dict):
-                resolved = response.get("auto_parameters")
-                if isinstance(resolved, dict):
-
             score = self._effective_score(response)
             text = self._answer_from_tavily_response(response)
             # `>` (not `>=`) preserves the topic order in _DUAL_SEARCH_TOPICS as
@@ -302,8 +298,9 @@ class WebSearchTool:
             self._captured_sources.extend(
                 self._sources_from_tavily_response(best_response, self.max_results)
             )
-        except Exception as _src_exc:
-
+        except Exception:
+            # Source capture is best-effort; never log provider payloads here.
+            pass
         if not best_text.strip():
             return (
                 _WEB_PREFIX.rstrip()
