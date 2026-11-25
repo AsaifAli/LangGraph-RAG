@@ -16,3 +16,12 @@ def test_katzilla_enabled_with_key(monkeypatch):
     client = KatzillaMCPClient.from_env()
     assert client.available
     assert client.url.endswith("/mcp")
+
+
+def test_mcp_transport_does_not_forward_credentials_through_redirects():
+    timeout = object()
+    options = KatzillaMCPClient._http_client_options("server-secret", timeout)
+
+    assert options["follow_redirects"] is False
+    assert options["timeout"] is timeout
+    assert options["headers"] == {"Authorization": "Bearer server-secret"}
