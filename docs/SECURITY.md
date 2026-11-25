@@ -17,7 +17,7 @@ This is a code/configuration review, not a penetration test or a declaration of 
 3. **Gateway URL trust (High): PATCHED in this branch.** `app/gateway_handoff.py` requires HTTPS and public DNS destinations for remote gateways, rejects nonstandard external ports, and permits loopback/host.docker.internal only in non-production local development. Gateway URL remains server-side configuration, never a chat payload.
 4. **Container privilege (Medium):** the checked-in Dockerfiles do not declare a non-root runtime user. Use an unprivileged UID and ensure only runtime-writable paths (such as chat history/cache) are owned by it.
 5. **Diagnostic disclosure (Medium):** the Streamlit turn failure path displays exception details/tracebacks in an expandable UI block. Keep detailed diagnostics in access-controlled logs with redaction; show a generic correlation identifier to the user.
-6. **Upload surface:** Streamlit accepts user files. Enforce size limits before reading all bytes, validate actual file type/signature and archive contents server-side, and reject malformed or decompression-bomb-like inputs.
+6. **Upload surface: PATCHED in this branch.** The central `retrieval/rag_pipeline.py::ingest_document` path calls `shared/upload_security.py` before parsers, image processing, indexing or model calls. It enforces a configurable 200 MB default cap (matching Streamlit's existing cap), validates PDF/DOC/DOCX/text/image signatures, and bounds Office archive entries and expanded size. The Streamlit server upload cap is explicitly set to 200 MB.
 
 ## 20-control assessment
 | # | Control | Result |
