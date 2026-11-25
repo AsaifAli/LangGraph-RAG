@@ -109,6 +109,7 @@ if str(_POC_ROOT) not in sys.path:
 from app.demo_onboarding import render_demo_onboarding  # noqa: E402
 from shared.security_logging import log_safe_failure  # noqa: E402
 from shared.document_access import filter_documents_for_owner, owner_scope_matches  # noqa: E402
+from shared.rate_limit import RateLimitBackendUnavailable, RateLimitExceeded, owner_rate_limiter  # noqa: E402
 
 from app.gateway_handoff import (  # noqa: E402
     GatewayHandoffError,
@@ -1380,7 +1381,7 @@ def _delete_chat_document(document_id: str) -> None:
 
 
 def _clear_everything() -> None:
-    """Wipe every chat and every document — explicit-action only, no
+    """Wipe this access scope's chats and documents — explicit-action only, no
     automatic trigger (Streamlit has no officially supported "browser tab
     closed" hook — `st.session_state` is documented as just dropped from
     server memory on disconnect, nothing fires user code; a real
@@ -1447,8 +1448,8 @@ def _clear_everything() -> None:
 @st.dialog("Clear everything?")
 def _confirm_clear_everything() -> None:
     st.warning(
-        "This permanently deletes every chat and every document's vectors from "
-        "OpenSearch. This cannot be undone.",
+        "This permanently deletes the chats and document evidence belonging to this access scope. "
+        "Other owners' documents and chats are not affected.",
         icon="⚠️",
     )
     col_cancel, col_confirm = st.columns(2)
@@ -2149,7 +2150,7 @@ with st.sidebar:
             with _col_doc:
                 st.markdown(
                     f'<div class="doc-chip">{_icon("file-text", size=15)}'
-                    f"{d['name']} — {d['chunk_count']} chunks</div>",
+                    f"{html_lib.escape(str(d['name']))} — {int(d['chunk_count'])} chunks</div>",
                     unsafe_allow_html=True,
                 )
             with _col_del_doc:
@@ -2172,7 +2173,7 @@ with st.sidebar:
             with _col_cdoc:
                 st.markdown(
                     f'<div class="doc-chip">{_icon("file-text", size=15)}'
-                    f"{d['name']} — {d['chunk_count']} chunks</div>",
+                    f"{html_lib.escape(str(d['name']))} — {int(d['chunk_count'])} chunks</div>",
                     unsafe_allow_html=True,
                 )
             with _col_del_cdoc:
@@ -2197,7 +2198,7 @@ with st.sidebar:
         "Clear everything",
         width="stretch",
         icon="🗑️",
-        help="Delete every chat and every document, permanently",
+        help="Delete every chat and document in the current access scope",
     ):
         _confirm_clear_everything()
 
@@ -3065,6 +3066,39 @@ with _main_col:
             st.session_state.chat_ingested_hashes.add(content_hash)
             _record_chat_upload(f.name, result["document_id"], result["chunk_count"], content_hash)
             st.toast(f"Added {f.name} ✓", icon="✅")
+
+        if text and text.strip():
+            try:
+                owner_rate_limiter.enforce(
+                    _current_owner_scope(),
+                    "chat",
+                    limit=30,
+                    window_seconds=60,
+                )
+            except RateLimitExceeded as exc:
+                st.session_state.messages.append(
+                    {
+                        "role": "assistant",
+                        "content": (
+                            "You've reached the EvidenceFlow message limit. "
+                            f"Please retry in about {exc.retry_after} seconds."
+                        ),
+                        "kind": "notice",
+                    }
+                )
+                text = None
+            except RateLimitBackendUnavailable:
+                st.session_state.messages.append(
+                    {
+                        "role": "assistant",
+                        "content": (
+                            "EvidenceFlow is temporarily unable to verify its request quota. "
+                            "Please retry shortly."
+                        ),
+                        "kind": "notice",
+                    }
+                )
+                text = None
 
         if text and text.strip():
             _display_text = text
