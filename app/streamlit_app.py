@@ -1203,11 +1203,24 @@ def _persist_current_chat() -> None:
     blank files."""
     if not st.session_state.messages:
         return
+    owner_scope = _current_owner_scope()
     threads = st.session_state.chat_store["threads"]
-    thread = next((t for t in threads if t["thread_id"] == st.session_state.thread_id), None)
+    thread = next(
+        (
+            t for t in threads
+            if t.get("thread_id") == st.session_state.thread_id
+            and owner_scope_matches(t, owner_scope)
+        ),
+        None,
+    )
     if thread is None:
-        thread = {"thread_id": st.session_state.thread_id, "title": None}
+        thread = {
+            "thread_id": st.session_state.thread_id,
+            "title": None,
+            "owner_scope": owner_scope,
+        }
         threads.append(thread)
+    thread["owner_scope"] = owner_scope
     if not thread.get("title"):
         first_user = next((m["content"] for m in st.session_state.messages if m["role"] == "user"), None)
         if first_user:
@@ -1216,7 +1229,10 @@ def _persist_current_chat() -> None:
     # This chat's own PER-CHAT attached documents (not the global sidebar
     # ones — see module docstring) — a property of this specific thread,
     # persisted alongside its messages so `_switch_to_chat` can restore it.
-    thread["uploaded_docs"] = list(st.session_state.chat_uploaded_docs)
+    thread["uploaded_docs"] = filter_documents_for_owner(
+        st.session_state.chat_uploaded_docs,
+        owner_scope,
+    )
     thread["updated_at"] = datetime.now(timezone.utc).isoformat()
     _CHAT_HISTORY_DIR.mkdir(parents=True, exist_ok=True)
     _chat_file_path(st.session_state.thread_id).write_text(
@@ -1225,8 +1241,14 @@ def _persist_current_chat() -> None:
 
 
 def _switch_to_chat(thread_id: str) -> None:
+    owner_scope = _current_owner_scope()
     thread = next(
-        (t for t in st.session_state.chat_store["threads"] if t["thread_id"] == thread_id), None
+        (
+            t for t in st.session_state.chat_store["threads"]
+            if t.get("thread_id") == thread_id
+            and owner_scope_matches(t, owner_scope)
+        ),
+        None,
     )
     if thread is None:
         return
@@ -1235,7 +1257,10 @@ def _switch_to_chat(thread_id: str) -> None:
     # PER-CHAT documents load with the chat they belong to (module docstring)
     # — the GLOBAL sidebar list is untouched, it's the same regardless of
     # which chat is active.
-    st.session_state.chat_uploaded_docs = list(thread.get("uploaded_docs", []))
+    st.session_state.chat_uploaded_docs = filter_documents_for_owner(
+        thread.get("uploaded_docs", []),
+        owner_scope,
+    )
     st.session_state.chat_ingested_hashes = {
         d["content_hash"] for d in st.session_state.chat_uploaded_docs if d.get("content_hash")
     }
@@ -1258,11 +1283,19 @@ def _delete_chat(thread_id: str) -> None:
     since the chat being deleted isn't necessarily the active one — deleting
     a past chat from the sidebar must delete THAT chat's documents, not
     whatever's currently loaded for the chat you're looking at."""
+    owner_scope = _current_owner_scope()
     target = next(
-        (t for t in st.session_state.chat_store["threads"] if t["thread_id"] == thread_id), None
+        (
+            t for t in st.session_state.chat_store["threads"]
+            if t.get("thread_id") == thread_id
+            and owner_scope_matches(t, owner_scope)
+        ),
+        None,
     )
-    for d in (target or {}).get("uploaded_docs", []):
-        _run_async(delete_document(d["document_id"]))
+    if target is None:
+        return
+    for d in filter_documents_for_owner(target.get("uploaded_docs", []), owner_scope):
+        _run_async(delete_document(d["document_id"], owner_scope=owner_scope))
 
     st.session_state.chat_store["threads"] = [
         t for t in st.session_state.chat_store["threads"] if t["thread_id"] != thread_id
@@ -1287,8 +1320,17 @@ def _delete_document(document_id: str) -> None:
     and its content hash from `ingested_hashes` (so re-uploading the exact
     same file later isn't silently skipped as "already ingested" — it
     genuinely isn't, anymore)."""
-    doc = next((d for d in st.session_state.uploaded_docs if d["document_id"] == document_id), None)
-    _run_async(delete_document(document_id))
+    owner_scope = _current_owner_scope()
+    doc = next(
+        (
+            d for d in filter_documents_for_owner(st.session_state.uploaded_docs, owner_scope)
+            if d["document_id"] == document_id
+        ),
+        None,
+    )
+    if doc is None:
+        return
+    _run_async(delete_document(document_id, owner_scope=owner_scope))
     st.session_state.uploaded_docs = [
         d for d in st.session_state.uploaded_docs if d["document_id"] != document_id
     ]
@@ -1311,8 +1353,17 @@ def _delete_chat_document(document_id: str) -> None:
     chat's own list) and `chat_ingested_hashes` instead of the global ones.
     Caller is responsible for `_persist_current_chat()` afterward, same as
     the global version's callers do."""
-    doc = next((d for d in st.session_state.chat_uploaded_docs if d["document_id"] == document_id), None)
-    _run_async(delete_document(document_id))
+    owner_scope = _current_owner_scope()
+    doc = next(
+        (
+            d for d in filter_documents_for_owner(st.session_state.chat_uploaded_docs, owner_scope)
+            if d["document_id"] == document_id
+        ),
+        None,
+    )
+    if doc is None:
+        return
+    _run_async(delete_document(document_id, owner_scope=owner_scope))
     st.session_state.chat_uploaded_docs = [
         d for d in st.session_state.chat_uploaded_docs if d["document_id"] != document_id
     ]
