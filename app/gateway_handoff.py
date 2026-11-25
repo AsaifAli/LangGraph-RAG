@@ -102,9 +102,23 @@ def _validate_gateway_destination(base_url: str) -> None:
             )
         return
 
+    allowed_hosts = {
+        item.strip().rstrip(".").lower()
+        for item in os.environ.get(
+            "PORTFOLIO_SESSION_GATEWAY_ALLOWED_HOSTS",
+            "portfolio-llm-gateway.onrender.com",
+        ).split(",")
+        if item.strip()
+    }
+
     if parsed.scheme != "https":
         raise GatewayHandoffError(
             "The portfolio session gateway must use HTTPS."
+        )
+
+    if normalized_host not in allowed_hosts:
+        raise GatewayHandoffError(
+            "The portfolio session gateway host is not approved."
         )
 
     if port not in {None, 443}:
