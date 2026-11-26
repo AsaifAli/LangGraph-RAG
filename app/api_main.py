@@ -176,12 +176,14 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+_DEFAULT_DEV_ORIGINS = (
+    ""
+    if _is_production()
+    else "http://localhost:5173,http://127.0.0.1:5173"
+)
 _ALLOWED_ORIGINS = [
     value.strip().rstrip("/")
-    for value in os.getenv(
-        "CORS_ORIGINS",
-        "http://localhost:5173,http://127.0.0.1:5173",
-    ).split(",")
+    for value in os.getenv("CORS_ORIGINS", _DEFAULT_DEV_ORIGINS).split(",")
     if value.strip()
 ]
 app.add_middleware(
