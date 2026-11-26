@@ -187,3 +187,12 @@ def test_gateway_exchange_sets_httponly_cookie_without_returning_bearer(monkeypa
     stored_session = test_store.get_session(session_id)
     assert stored_session is not None
     assert stored_session["access_token"] == "gateway-secret-for-browser-session"
+
+
+def test_evidence_markers_are_rendered_as_source_anchors():
+    assert api_main._strip_evidence_tags(
+        "The policy requires approval [EVID:E01]."
+    ) == "The policy requires approval [E01](#evidence-E01)."
+    assert api_main._strip_evidence_tags(
+        "See the control [EVID: E02] for context."
+    ) == "See the control [E02](#evidence-E02) for context."
