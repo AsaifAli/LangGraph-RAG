@@ -131,7 +131,7 @@ function EvidenceInspector({
               ) : (
                 <>
                   {chunks.map((chunk, index) => (
-                    <div className="evidence-card" key={chunk.evidence_id || chunk.document_id + index}>
+                    <div className="evidence-card" id={`evidence-${chunk.evidence_id}`} key={chunk.evidence_id || chunk.document_id + index}>
                       <div className="evidence-card-top">
                         <span className="evidence-index">{chunk.evidence_id || "SOURCE"}</span>
                         <span className="evidence-score">{typeof chunk.score === "number" ? Math.round(chunk.score * 100) + " relevance" : "Knowledge base"}</span>
@@ -520,7 +520,7 @@ function App() {
                           <div className="message-stack">
                             <div className="message-label">EvidenceFlow <span className="thinking-status"><LoaderCircle size={12} /> {statusText}</span></div>
                             <div className="message-bubble assistant-bubble">
-                              {streamText ? <div className="markdown-content"><ReactMarkdown remarkPlugins={[remarkGfm]}>{streamText}</ReactMarkdown></div> : <div className="thinking-dots"><i /><i /><i /></div>}
+                              {streamText ? <div className="markdown-content"><ReactMarkdown remarkPlugins={[remarkGfm]}>{streamText.replace(/\[EVID:\s*(E\d+)\]/gi, (_marker, id: string) => `[${id.toUpperCase()}](#evidence-${id.toUpperCase()})`)}</ReactMarkdown></div> : <div className="thinking-dots"><i /><i /><i /></div>}
                             </div>
                           </div>
                         </article>
