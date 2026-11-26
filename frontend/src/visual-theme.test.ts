@@ -15,9 +15,21 @@ describe("EvidenceFlow spatial theme system", () => {
 
   it("defines a dedicated dark palette with readable raised and inset surfaces", () => {
     expect(styles).toMatch(/:root\[data-theme=\"dark\"\]\s*\{/);
-    expect(styles).toMatch(/--surface-main:\s*rgba\(26, 38, 31/);
-    expect(styles).toMatch(/--surface-input:\s*rgba\(20, 32, 25/);
+    expect(styles).toMatch(/--surface-main:\s*#1b212a/);
+    expect(styles).toMatch(/--surface-input:\s*#171d25/);
     expect(styles).toMatch(/:root\[data-theme=\"dark\"\] \.welcome-core/);
+  });
+
+  it("uses a neutral graphite foundation in dark mode with green kept as an accent", () => {
+    const graphite = styles.split("/* Graphite dark mode — neutral charcoal surfaces, restrained brand accents. */").at(-1) ?? "";
+    expect(graphite).toMatch(/--canvas:\s*#101319/);
+    expect(graphite).toMatch(/--surface-main:\s*#1b212a/);
+    expect(graphite).toMatch(/--surface-raised:\s*#252c36/);
+    expect(graphite).toMatch(/linear-gradient\(145deg, #191f29 0%, #11151c 58%, #0e1218 100%\)/);
+    expect(graphite).toMatch(/--accent-soft:\s*rgba\(126, 157, 137, \.14\)/);
+    expect(graphite).toMatch(/\.sidebar \{[\s\S]*?linear-gradient\(154deg, #202630 0%, #191f28 52%, #141922 100%\)/);
+    expect(graphite).not.toContain("#1c2922");
+    expect(graphite).not.toContain("rgba(72, 112, 82");
   });
 
   it("follows the operating system when System appearance is selected", () => {
