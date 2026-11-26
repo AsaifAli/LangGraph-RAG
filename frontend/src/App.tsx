@@ -96,7 +96,7 @@ function EvidenceInspector({
 }) {
   const chunks = meta?.chunks || [];
   const webSources = meta?.web_sources || [];
-  const trace = meta?.agent_trace || [];
+  const trace = meta?.delegations || meta?.agent_trace || [];
   const [tab, setTab] = useState<"sources" | "trace">("sources");
 
   return (
@@ -160,7 +160,7 @@ function EvidenceInspector({
               ) : trace.map((step, index) => (
                 <div className="trace-item" key={String(step.agent || index)}>
                   <div className="trace-marker"><Check size={12} /></div>
-                  <div><strong>{String(step.agent || "Research step")}</strong><p>{String(step.responsibility || "")}</p></div>
+                  <div><strong>{String(step.description || step.subagent_type || "Research step")}</strong><p>{String(step.result || step.responsibility || "")}</p></div>
                 </div>
               ))}
             </div>
