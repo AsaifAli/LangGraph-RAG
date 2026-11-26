@@ -5,6 +5,9 @@ import {
   LogOut, Menu, MessageSquare, MoreHorizontal, Plus, Search, Send,
   ShieldCheck, Sparkles, Trash2, Upload, X, PanelRightClose, PanelRightOpen,
 } from "lucide-react";
+import { AppearanceControl } from "./AppearanceControl";
+import { applyThemePreference, getInitialThemePreference } from "./theme";
+import type { ThemePreference } from "./theme";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
@@ -184,6 +187,7 @@ function EvidenceInspector({
 }
 
 function App() {
+  const [themePreference, setThemePreference] = useState<ThemePreference>(getInitialThemePreference);
   const [session, setSession] = useState<SessionInfo | null>(null);
   const [authError, setAuthError] = useState("");
   const [booting, setBooting] = useState(true);
@@ -207,6 +211,14 @@ function App() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const knowledgeInputRef = useRef<HTMLInputElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    try {
+      applyThemePreference(themePreference, document.documentElement, window.localStorage);
+    } catch {
+      applyThemePreference(themePreference, document.documentElement);
+    }
+  }, [themePreference]);
 
   const activeChat = chats.find((chat) => chat.thread_id === threadId);
   const latestMeta = useMemo(
@@ -504,6 +516,7 @@ function App() {
             <div className="breadcrumb"><span>Workspace</span><span className="breadcrumb-slash">/</span><strong>{view === "research" ? "Research" : view === "knowledge" ? "Knowledge base" : "History"}</strong></div>
           </div>
           <div className="topbar-actions">
+            <AppearanceControl value={themePreference} onChange={setThemePreference} />
             <span className="privacy-pill"><span className="connected-dot" /> Private workspace</span>
             <button className="icon-button desktop-evidence-toggle" onClick={toggleInspector} title="Toggle evidence panel">
               {inspectorCollapsed ? <PanelRightOpen size={17} /> : <PanelRightClose size={17} />}

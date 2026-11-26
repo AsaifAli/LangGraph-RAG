@@ -1,9 +1,22 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="system">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#f3f4f2" />
+    <meta name="theme-color" content="#f4f7f3" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#141d18" media="(prefers-color-scheme: dark)" />
+    <script>
+      (() => {
+        let preference = "system";
+        try {
+          const saved = localStorage.getItem("evidenceflow.theme");
+          if (saved === "light" || saved === "dark" || saved === "system") preference = saved;
+        } catch {}
+        const root = document.documentElement;
+        root.dataset.theme = preference;
+        root.style.colorScheme = preference === "system" ? "light dark" : preference;
+      })();
+    </script>
     <meta name="description" content="EvidenceFlow — verified research across your documents and trusted sources." />
     <title>EvidenceFlow · Verified Research</title>
   </head>
