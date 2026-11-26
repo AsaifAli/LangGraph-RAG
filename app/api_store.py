@@ -186,7 +186,9 @@ class EvidenceFlowStore:
         try:
             key = self._session_key(session_id)
             raw = self.kv.get(key)
-        except (ValueError, SessionStoreUnavailable):
+        except ValueError:
+            return None
+        except SessionStoreUnavailable:
             raise
         except Exception as exc:
             raise SessionStoreUnavailable(
