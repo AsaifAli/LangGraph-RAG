@@ -861,10 +861,23 @@ def _jina_rerank(query: str, chunks: list[RetrievedChunk], *, top_n: int) -> lis
                 chunk.score = score
                 result.append(chunk)
             return result
+        except httpx.HTTPStatusError as exc:
+            status = exc.response.status_code
+            if 400 <= status < 500:
+                raise RuntimeError(
+                    f"Jina rerank rejected the request (HTTP {status})"
+                ) from None
+            last_error = RuntimeError(
+                f"Jina rerank HTTP request failed (HTTP {status})"
+            )
         except httpx.HTTPError as exc:
             last_error = RuntimeError(
-                f"Jina rerank HTTP request failed ({type(exc).__name__})"
+                f"Jina rerank transport failed ({type(exc).__name__})"
             )
+        except RuntimeError:
+            raise
+        except json.JSONDecodeError:
+            raise RuntimeError("Jina rerank returned invalid JSON") from None
         except Exception as exc:
             # Never surface raw upstream error bodies, which can contain
             # request data or provider diagnostics.
