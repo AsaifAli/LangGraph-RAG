@@ -54,7 +54,7 @@ from shared.upload_security import validate_declared_upload_size
 LOGGER = logging.getLogger("evidenceflow.api")
 COOKIE_NAME = "evidenceflow_session"
 CHAT_ID_PATTERN = re.compile(r"^[a-f0-9]{32}$")
-EVIDENCE_TAG_PATTERN = re.compile(r"\s*\[EVID:\s*E\d+\]")
+EVIDENCE_TAG_PATTERN = re.compile(r"\s*\[EVID:\s*(E\d+)\]", re.IGNORECASE)
 MAX_MESSAGES_PER_CHAT = 100
 MAX_CHATS_PER_OWNER = 100
 MAX_AGENT_CACHE = 64
@@ -96,7 +96,11 @@ def _json_for_sse(event: str, payload: dict[str, Any]) -> str:
 
 
 def _strip_evidence_tags(value: str) -> str:
-    return EVIDENCE_TAG_PATTERN.sub("", str(value or "")).strip()
+    """Convert trusted evidence markers into navigable links, not plain text."""
+    return EVIDENCE_TAG_PATTERN.sub(
+        lambda match: f" [{match.group(1).upper()}](#evidence-{match.group(1).upper()})",
+        str(value or ""),
+    ).strip()
 
 
 def _safe_outcome(outcome: dict[str, Any]) -> dict[str, Any]:
