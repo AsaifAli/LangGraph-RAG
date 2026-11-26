@@ -15,7 +15,7 @@ opensearch-py==2.8.0
 langchain-text-splitters==1.1.2
 
 # Local reranking only; this is not used for vector retrieval.
-fastembed==0.8.0
+fastembed==0.9.1  # Adds Pillow 13 compatibility; 0.8.0 constrained Pillow below 13.
 
 # Provider / API utilities
 fastapi>=0.115,<1
