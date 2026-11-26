@@ -32,6 +32,9 @@ import time
 import uuid
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from urllib.parse import urlsplit
+
+import httpx
 from typing import Any
 
 _POC_DIR = Path(__file__).resolve().parent.parent
@@ -744,44 +747,82 @@ def _local_cross_encoder_rerank(query: str, chunks: list[RetrievedChunk], *, top
     return result
 
 
+def _validated_jina_rerank_url() -> str:
+    """Allow only the official HTTPS Jina reranking endpoint.
+
+    The URL is deployment configuration, not request input. Pinning its
+    destination prevents accidental file/custom-scheme access and SSRF via a
+    misconfigured environment value.
+    """
+    try:
+        parsed = urlsplit(JINA_API_URL)
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError("Jina reranker URL is invalid.") from exc
+
+    if (
+        parsed.scheme.lower() != "https"
+        or (parsed.hostname or "").rstrip(".").lower() != "api.jina.ai"
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path.rstrip("/") != "/v1/rerank"
+        or parsed.query
+        or parsed.fragment
+        or port not in {None, 443}
+    ):
+        raise ValueError(
+            "Jina reranker destination must be the official HTTPS API endpoint."
+        )
+    return JINA_API_URL
+
+
 def _jina_rerank(query: str, chunks: list[RetrievedChunk], *, top_n: int) -> list[RetrievedChunk]:
     if not JINA_API_KEY:
         raise RuntimeError("JINA_API_KEY is required when RERANK_BACKEND=jina")
 
-    import urllib.error
-    import urllib.request
-
-    payload = json.dumps(
-        {
-            "model": JINA_RERANK_MODEL,
-            "query": query,
-            "documents": [chunk.content for chunk in chunks],
-            "top_n": min(top_n, len(chunks)),
-            "return_documents": False,
-        }
-    ).encode("utf-8")
-    request = urllib.request.Request(
-        JINA_API_URL,
-        data=payload,
-        method="POST",
-        headers={
-            "Authorization": f"Bearer {JINA_API_KEY}",
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-        },
-    )
+    endpoint = _validated_jina_rerank_url()
+    payload = {
+        "model": JINA_RERANK_MODEL,
+        "query": query,
+        "documents": [chunk.content for chunk in chunks],
+        "top_n": min(top_n, len(chunks)),
+        "return_documents": False,
+    }
+    headers = {
+        "Authorization": f"Bearer {JINA_API_KEY}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
 
     last_error: Exception | None = None
     for attempt in range(3):
         try:
-            with urllib.request.urlopen(request, timeout=30) as response:
-                body = json.loads(response.read().decode("utf-8"))
+            with httpx.Client(
+                timeout=30.0,
+                follow_redirects=False,
+                trust_env=False,
+            ) as client:
+                response = client.post(endpoint, json=payload, headers=headers)
+
+            if 300 <= response.status_code < 400:
+                raise RuntimeError("Jina rerank redirects are not allowed")
+            response.raise_for_status()
+
+            if len(response.content) > 2_000_000:
+                raise RuntimeError("Jina rerank response exceeded the size limit")
+
+            body = response.json()
+            if not isinstance(body, dict):
+                raise RuntimeError("Jina rerank returned an invalid response")
+
             data = body.get("results") or body.get("data") or []
             if not isinstance(data, list):
-                raise RuntimeError(f"Unexpected Jina rerank response: {body}")
+                raise RuntimeError("Jina rerank returned an invalid result list")
 
             ranked: list[tuple[RetrievedChunk, float]] = []
             for item in data:
+                if not isinstance(item, dict):
+                    continue
                 index = item.get("index")
                 score = item.get("relevance_score", item.get("score"))
                 if index is None or score is None:
@@ -792,17 +833,20 @@ def _jina_rerank(query: str, chunks: list[RetrievedChunk], *, top_n: int) -> lis
                 ranked.append((chunks[index], float(score)))
 
             if not ranked:
-                raise RuntimeError(f"Jina rerank returned no usable results: {body}")
+                raise RuntimeError("Jina rerank returned no usable results")
 
             result = []
             for chunk, score in ranked[:top_n]:
                 chunk.score = score
                 result.append(chunk)
             return result
-        except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace")
-            last_error = RuntimeError(f"Jina rerank HTTP {exc.code}: {detail[:500]}")
+        except httpx.HTTPError as exc:
+            last_error = RuntimeError(
+                f"Jina rerank HTTP request failed ({type(exc).__name__})"
+            )
         except Exception as exc:
+            # Never surface raw upstream error bodies, which can contain
+            # request data or provider diagnostics.
             last_error = exc
         if attempt < 2:
             time.sleep(1.5 * (attempt + 1))
