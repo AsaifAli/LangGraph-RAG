@@ -31,6 +31,7 @@ export interface ChatMessage {
     chunks?: EvidenceChunk[];
     web_sources?: Array<Record<string, unknown>>;
     agent_trace?: Array<Record<string, unknown>>;
+    delegations?: Array<Record<string, unknown>>;
     quality?: Record<string, unknown>;
     grounding_status?: string | null;
     abstained?: boolean;
