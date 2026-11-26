@@ -227,7 +227,7 @@ def ready():
 
 
 @app.post("/api/v1/session/exchange")
-async def exchange_session(payload: SessionExchangeRequest, response: JSONResponse | None = None):
+async def exchange_session(payload: SessionExchangeRequest):
     try:
         exchanged = await asyncio.to_thread(
             exchange_handoff_code,
@@ -317,6 +317,8 @@ def list_chats(session=Depends(require_session)):
 def create_chat(session=Depends(require_session)):
     _, details = session
     state = _load_workspace(details["owner_scope"])
+    if len(state["chats"]) >= MAX_CHATS_PER_OWNER:
+        raise HTTPException(409, "Conversation limit reached. Delete an older conversation to continue.")
     chat = {
         "thread_id": uuid.uuid4().hex,
         "title": "New conversation",
