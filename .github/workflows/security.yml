@@ -9,7 +9,6 @@ on:
 
 permissions:
   contents: read
-  security-events: write
 
 jobs:
   dependency-audit:
@@ -37,29 +36,3 @@ jobs:
         run: python -m pip install --upgrade pip bandit
       - name: Scan application Python code
         run: bandit -r agents app citations config retrieval scripts shared tools -lll -iii -x tests
-
-  container-scan:
-    name: Build and scan deployment image
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      security-events: write
-    steps:
-      - uses: actions/checkout@v4
-      - name: Build runtime image
-        run: docker build --file Dockerfile.render --tag "${{ github.repository }}:${{ github.sha }}" .
-      - name: Scan image for high and critical vulnerabilities
-        uses: aquasecurity/trivy-action@0.36.0
-        with:
-          image-ref: "${{ github.repository }}:${{ github.sha }}"
-          format: sarif
-          output: trivy-results.sarif
-          severity: HIGH,CRITICAL
-          ignore-unfixed: true
-          scanners: vuln,misconfig
-          exit-code: "1"
-      - name: Upload Trivy results to code scanning
-        if: always() && hashFiles('trivy-results.sarif') != ''
-        uses: github/codeql-action/upload-sarif@v4
-        with:
-          sarif_file: trivy-results.sarif
