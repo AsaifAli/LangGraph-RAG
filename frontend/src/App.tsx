@@ -95,10 +95,11 @@ function MessageBubble({ message }: { message: ChatMessage }) {
 }
 
 function EvidenceInspector({
-  meta, collapsed, onToggle,
+  meta, collapsed, mobileOpen, onToggle,
 }: {
   meta: ChatMessage["meta"] | undefined;
   collapsed: boolean;
+  mobileOpen: boolean;
   onToggle: () => void;
 }) {
   const chunks = meta?.chunks || [];
@@ -107,7 +108,7 @@ function EvidenceInspector({
   const [tab, setTab] = useState<"sources" | "trace">("sources");
 
   return (
-    <aside className={collapsed ? "inspector inspector-collapsed" : "inspector"}>
+    <aside className={["inspector", collapsed ? "inspector-collapsed" : "", mobileOpen ? "inspector-mobile-open" : ""].filter(Boolean).join(" ")}>
       <div className="inspector-head">
         <div>
           <p className="eyebrow">RESEARCH CONTEXT</p>
@@ -200,6 +201,7 @@ function App() {
   const [notice, setNotice] = useState("");
   const [uploading, setUploading] = useState(false);
   const [inspectorCollapsed, setInspectorCollapsed] = useState(false);
+  const [inspectorMobileOpen, setInspectorMobileOpen] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [search, setSearch] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -420,6 +422,22 @@ function App() {
     }
   };
 
+  const toggleInspector = () => {
+    if (window.matchMedia("(max-width: 700px)").matches) {
+      setInspectorMobileOpen((value) => !value);
+    } else {
+      setInspectorCollapsed((value) => !value);
+    }
+  };
+
+  const closeInspector = () => {
+    if (window.matchMedia("(max-width: 700px)").matches) {
+      setInspectorMobileOpen(false);
+    } else {
+      setInspectorCollapsed(true);
+    }
+  };
+
   const handleLogout = async () => {
     try { await revokeSession(); } catch { /* Expired sessions can still be cleared locally. */ }
     setSession(null);
@@ -487,8 +505,11 @@ function App() {
           </div>
           <div className="topbar-actions">
             <span className="privacy-pill"><span className="connected-dot" /> Private workspace</span>
-            <button className="icon-button" onClick={() => setInspectorCollapsed((value) => !value)} title="Toggle evidence panel">
+            <button className="icon-button desktop-evidence-toggle" onClick={toggleInspector} title="Toggle evidence panel">
               {inspectorCollapsed ? <PanelRightOpen size={17} /> : <PanelRightClose size={17} />}
+            </button>
+            <button className="icon-button mobile-evidence-toggle" onClick={() => setInspectorMobileOpen(true)} title="Open evidence panel">
+              <BookOpen size={17} />
             </button>
             <a className="help-link" href="https://github.com/AsaifAli/LangGraph-RAG" target="_blank" rel="noreferrer"><CircleHelp size={16} /></a>
           </div>
@@ -600,7 +621,13 @@ function App() {
             {notice ? <div className="notice-toast" role="status"><span>{notice}</span><button onClick={() => setNotice("")}><X size={14} /></button></div> : null}
           </section>
 
-          <EvidenceInspector meta={latestMeta} collapsed={inspectorCollapsed} onToggle={() => setInspectorCollapsed((value) => !value)} />
+          {inspectorMobileOpen ? <button className="inspector-mobile-scrim" aria-label="Close evidence panel" onClick={() => setInspectorMobileOpen(false)} /> : null}
+          <EvidenceInspector
+            meta={latestMeta}
+            collapsed={inspectorCollapsed}
+            mobileOpen={inspectorMobileOpen}
+            onToggle={closeInspector}
+          />
         </div>
       </main>
     </div>
