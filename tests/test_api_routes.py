@@ -150,3 +150,40 @@ def test_document_api_omits_internal_owner_scope_and_content_hash(monkeypatch):
         assert public_document["document_id"]
         assert "owner_scope" not in public_document
         assert "content_hash" not in public_document
+
+
+def test_gateway_exchange_sets_httponly_cookie_without_returning_bearer(monkeypatch):
+    test_store = _test_store()
+    monkeypatch.setattr(api_main, "store", test_store)
+    monkeypatch.setattr(
+        api_main,
+        "exchange_handoff_code",
+        lambda code, project: {
+            "access_token": "gateway-secret-for-browser-session",
+            "expires_in": 900,
+            "owner_scope": "e" * 64,
+            "provider": "openrouter",
+            "model": "openai/gpt-4o-mini",
+            "target_project": project,
+        },
+    )
+
+    response = TestClient(api_main.app).post(
+        "/api/v1/session/exchange",
+        json={"code": "a" * 48},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["active"] is True
+    assert "access_token" not in body
+    assert "owner_scope" not in body
+    cookie_header = response.headers["set-cookie"].lower()
+    assert "httponly" in cookie_header
+    assert "samesite=lax" in cookie_header
+
+    session_id = response.cookies.get(api_main.COOKIE_NAME)
+    assert session_id
+    stored_session = test_store.get_session(session_id)
+    assert stored_session is not None
+    assert stored_session["access_token"] == "gateway-secret-for-browser-session"
