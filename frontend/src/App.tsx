@@ -624,7 +624,7 @@ function App() {
           {inspectorMobileOpen ? <button className="inspector-mobile-scrim" aria-label="Close evidence panel" onClick={() => setInspectorMobileOpen(false)} /> : null}
           <EvidenceInspector
             meta={latestMeta}
-            collapsed={inspectorCollapsed}
+            collapsed={inspectorCollapsed && !inspectorMobileOpen}
             mobileOpen={inspectorMobileOpen}
             onToggle={closeInspector}
           />
