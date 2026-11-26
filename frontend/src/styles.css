@@ -172,6 +172,8 @@ a { color: inherit; }
 .markdown-content ul, .markdown-content ol { padding-left: 20px; margin: 8px 0; }
 .markdown-content li { padding: 2px 0; }
 .markdown-content blockquote { margin: 12px 0; padding: 4px 12px; border-left: 2px solid #8eae95; color: #718078; }
+.markdown-content a[href^="#evidence-"] { display: inline-flex; align-items: center; padding: 1px 5px; border: 1px solid rgba(90, 132, 96, .13); border-radius: 5px; color: #547d5b; background: #edf4eb; font-size: .82em; font-weight: 650; text-decoration: none; vertical-align: .08em; }
+.markdown-content a[href^="#evidence-"]:hover { border-color: rgba(76, 125, 85, .3); background: #e3eee1; }
 .markdown-content code { padding: 2px 5px; border-radius: 5px; background: #eef2ed; color: #4f6b56; font-size: .91em; }
 .markdown-content pre { overflow-x: auto; padding: 13px; border-radius: 10px; background: #24322b; color: #e6eee7; }
 .markdown-content pre code { padding: 0; background: transparent; color: inherit; }
