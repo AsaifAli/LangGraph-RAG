@@ -209,7 +209,14 @@ async def protect_cookie_mutations(request: Request, call_next):
                     status_code=403,
                     content={"detail": "Request origin is not permitted."},
                 )
-    return await call_next(request)
+    result = await call_next(request)
+    if request.url.path.startswith("/api/v1/"):
+        result.headers["Cache-Control"] = "no-store"
+        result.headers["Pragma"] = "no-cache"
+    result.headers.setdefault("X-Content-Type-Options", "nosniff")
+    result.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    result.headers.setdefault("X-Frame-Options", "DENY")
+    return result
 
 
 @app.get("/health")
