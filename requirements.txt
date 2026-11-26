@@ -6,7 +6,7 @@ langgraph-checkpoint-sqlite==3.1.1
 
 # Chat model backends
 langchain-google-genai==4.3.2
-langchain-openai==1.1.0
+langchain-openai==1.1.14
 langchain-huggingface==1.2.2
 huggingface_hub==1.26.1
 
@@ -21,7 +21,7 @@ fastembed==0.8.0
 fastapi>=0.115,<1
 uvicorn[standard]>=0.30,<1
 python-multipart>=0.0.9,<1
-cryptography>=42,<47
+cryptography>=50.0.2,<51
 aiosqlite>=0.20,<1
 tavily-python==0.7.27
 google-genai==2.17.0
@@ -40,7 +40,7 @@ openpyxl==3.1.5
 streamlit==1.61.1
 
 # Tests / tooling
-pytest==8.4.2
+pytest==9.0.3
 pytest-asyncio==0.26.0
 pytest-cov==6.0.0
 setuptools>=75
@@ -48,5 +48,5 @@ setuptools>=75
 # Optional primary-source MCP client
 mcp>=2,<3
 PyMuPDF>=1.24,<2
-Pillow>=10,<13
+Pillow>=13.0.0,<14
 upstash-redis>=1.4,<2
