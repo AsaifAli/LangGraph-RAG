@@ -344,3 +344,52 @@ a { color: inherit; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 }
+
+/* Mobile evidence drawer: preserve source inspection without crowding the chat canvas. */
+.mobile-evidence-toggle { display: none; }
+.inspector-mobile-scrim { display: none; }
+@media (max-width: 700px) {
+  .desktop-evidence-toggle { display: none; }
+  .mobile-evidence-toggle { display: inline-grid; }
+  .inspector-mobile-scrim {
+    display: block;
+    position: fixed;
+    z-index: 55;
+    inset: 0;
+    padding: 0;
+    border: 0;
+    background: rgba(18, 31, 23, .28);
+    backdrop-filter: blur(3px);
+  }
+  .inspector.inspector-mobile-open {
+    display: flex;
+    position: fixed;
+    z-index: 60;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: min(88vw, 360px);
+    height: 100dvh;
+    flex: none;
+    border: 1px solid rgba(255,255,255,.8);
+    border-right: 0;
+    border-radius: 18px 0 0 18px;
+    background: rgba(246,249,245,.98);
+    box-shadow: -18px 0 50px rgba(28, 49, 34, .18);
+    animation: evidence-drawer-in .2s ease-out;
+  }
+  .inspector.inspector-mobile-open .inspector-head {
+    flex-direction: row;
+    gap: 0;
+    padding: 20px 16px 14px;
+  }
+  .inspector.inspector-mobile-open .inspector-head > div { display: block; }
+  .inspector.inspector-mobile-open .inspector-foot { display: flex; }
+}
+@keyframes evidence-drawer-in {
+  from { opacity: .75; transform: translateX(18px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .inspector.inspector-mobile-open { animation: none; }
+}
