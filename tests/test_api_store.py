@@ -80,3 +80,9 @@ def test_invalid_owner_scope_cannot_read_or_write_workspace():
         pass
     else:
         raise AssertionError("invalid owner scope must be rejected")
+
+
+def test_malformed_session_id_is_treated_as_missing_session():
+    store = EvidenceFlowStore(kv=MemoryKV(), encryption_secret="test-secret")
+
+    assert store.get_session("not-a-valid-session-cookie") is None
