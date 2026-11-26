@@ -393,3 +393,167 @@ a { color: inherit; }
 @media (prefers-reduced-motion: reduce) {
   .inspector.inspector-mobile-open { animation: none; }
 }
+
+
+/* Motion system — quiet, purposeful movement that reinforces spatial hierarchy. */
+html { scroll-behavior: smooth; }
+button, a, .document-row, .history-card, .evidence-card {
+  -webkit-tap-highlight-color: transparent;
+}
+button:active:not(:disabled), .suggestion-card:active, .history-main:active {
+  transform: translateY(1px) scale(.99);
+}
+.icon-button:active:not(:disabled), .composer-add:active {
+  transform: scale(.94);
+}
+.secondary-button:active, .primary-button:active {
+  transform: translateY(1px) scale(.985);
+}
+.send-button { transition: transform .16s cubic-bezier(.2,.8,.2,1), background .16s, box-shadow .16s; }
+.send-button:active:not(:disabled) { transform: scale(.93); box-shadow: 0 2px 5px rgba(53,95,61,.14); }
+
+.research-heading, .page-view {
+  animation: surface-arrive .42s cubic-bezier(.2,.75,.25,1) both;
+}
+.research-heading { animation-delay: .025s; }
+.page-heading, .storage-card, .history-tools {
+  animation: surface-arrive .36s cubic-bezier(.2,.75,.25,1) both;
+}
+.welcome-state { animation: welcome-arrive .58s cubic-bezier(.2,.8,.2,1) both; }
+.welcome-orbit { animation: orbit-arrive .65s cubic-bezier(.16,1,.3,1) both; }
+.welcome-core { animation: core-settle .72s cubic-bezier(.16,1,.3,1) both; }
+.welcome-state > .eyebrow,
+.welcome-state h2,
+.welcome-copy { animation: text-arrive .45s ease-out both; }
+.welcome-state > .eyebrow { animation-delay: .08s; }
+.welcome-state h2 { animation-delay: .13s; }
+.welcome-copy { animation-delay: .18s; }
+.suggestion-grid { animation: text-arrive .42s ease-out .22s both; }
+.suggestion-card {
+  transition: border-color .18s ease, background .18s ease, transform .22s cubic-bezier(.2,.8,.2,1), box-shadow .22s ease;
+}
+.suggestion-card:nth-child(1) { animation: card-arrive .42s ease-out .28s both; }
+.suggestion-card:nth-child(2) { animation: card-arrive .42s ease-out .36s both; }
+.suggestion-card:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 11px 26px rgba(40, 68, 46, .075);
+}
+.suggestion-card > svg:last-child { transition: transform .2s ease, opacity .2s ease; opacity: .65; }
+.suggestion-card:hover > svg:last-child { transform: translate(2px, -2px); opacity: 1; }
+
+.message-row {
+  animation: message-arrive .34s cubic-bezier(.2,.75,.25,1) both;
+  transform-origin: 50% 100%;
+}
+.message-row:nth-child(2) { animation-delay: .035s; }
+.message-row:nth-child(3) { animation-delay: .07s; }
+.message-row:nth-child(4) { animation-delay: .105s; }
+.message-row:nth-child(5) { animation-delay: .14s; }
+.message-bubble { transition: border-color .18s ease, box-shadow .18s ease; }
+.assistant-bubble:hover { border-color: rgba(70, 109, 79, .16); }
+.thinking-status { animation: status-arrive .22s ease-out both; }
+.thinking-status svg { animation: rotate 1.15s linear infinite; }
+.thinking-dots i { animation-duration: 1.3s; }
+
+.evidence-card {
+  animation: card-arrive .36s cubic-bezier(.2,.75,.25,1) both;
+  transition: transform .2s cubic-bezier(.2,.8,.2,1), border-color .18s ease, background .18s ease, box-shadow .2s ease;
+}
+.evidence-card:nth-child(2) { animation-delay: .035s; }
+.evidence-card:nth-child(3) { animation-delay: .07s; }
+.evidence-card:nth-child(4) { animation-delay: .105s; }
+.evidence-card:hover {
+  transform: translateY(-2px);
+  border-color: rgba(67, 114, 78, .22);
+  box-shadow: 0 9px 24px rgba(38, 60, 42, .065);
+}
+.evidence-index { transition: color .18s ease; }
+.evidence-card:hover .evidence-index { color: #4f7958; }
+.markdown-content a[href^="#evidence-"] {
+  transition: background .16s ease, border-color .16s ease, box-shadow .16s ease;
+  scroll-margin-top: 24px;
+}
+.markdown-content a[href^="#evidence-"]:hover {
+  box-shadow: 0 2px 8px rgba(70, 112, 77, .12);
+}
+
+.document-row, .history-card {
+  animation: row-arrive .34s ease-out both;
+  transition: background .18s ease, border-color .18s ease;
+}
+.document-row:nth-child(2), .history-card:nth-child(2) { animation-delay: .025s; }
+.document-row:nth-child(3), .history-card:nth-child(3) { animation-delay: .05s; }
+.document-row:nth-child(4), .history-card:nth-child(4) { animation-delay: .075s; }
+.document-row:nth-child(5), .history-card:nth-child(5) { animation-delay: .1s; }
+.document-icon, .history-icon { transition: transform .2s cubic-bezier(.2,.8,.2,1), background .18s ease; }
+.document-row:hover .document-icon, .history-card:hover .history-icon { transform: scale(1.06); background: #e7f0e6; }
+.document-row .subtle-icon { transition: opacity .16s ease, transform .16s ease, color .16s ease; }
+.document-row:hover .subtle-icon { transform: translateY(-1px); }
+
+.composer { transition: border .18s ease, box-shadow .22s ease, transform .2s ease; }
+.composer:focus-within { transform: translateY(-1px); }
+.composer-add svg { transition: transform .2s cubic-bezier(.2,.8,.2,1); }
+.composer-add:hover svg { transform: rotate(90deg); }
+.inspector-tab { transition: color .16s ease, background .16s ease, transform .16s ease; }
+.inspector-tab:active { transform: scale(.97); }
+.notice-toast { animation: toast-arrive .3s cubic-bezier(.2,.8,.2,1) both; }
+.auth-card { animation: auth-arrive .52s cubic-bezier(.16,1,.3,1) both; }
+.brand-mark { transition: transform .22s cubic-bezier(.2,.8,.2,1), box-shadow .22s ease; }
+.sidebar-brand:hover .brand-mark { transform: rotate(-5deg) scale(1.04); box-shadow: 0 8px 21px rgba(9,28,18,.25); }
+
+@keyframes surface-arrive {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes welcome-arrive {
+  from { opacity: 0; transform: translateY(13px) scale(.99); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes orbit-arrive {
+  from { opacity: 0; transform: scale(.78) rotate(-9deg); }
+  to { opacity: 1; transform: scale(1) rotate(0); }
+}
+@keyframes core-settle {
+  0% { opacity: 0; transform: scale(.82); }
+  65% { opacity: 1; transform: scale(1.045); }
+  100% { transform: scale(1); }
+}
+@keyframes text-arrive {
+  from { opacity: 0; transform: translateY(7px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes card-arrive {
+  from { opacity: 0; transform: translateY(9px) scale(.99); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes message-arrive {
+  from { opacity: 0; transform: translateY(8px) scale(.995); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes row-arrive {
+  from { opacity: 0; transform: translateY(5px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes status-arrive {
+  from { opacity: 0; transform: translateY(3px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes toast-arrive {
+  from { opacity: 0; transform: translateY(9px) scale(.985); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes auth-arrive {
+  from { opacity: 0; transform: translateY(12px) scale(.985); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  button:active:not(:disabled), .suggestion-card:active, .history-main:active,
+  .icon-button:active:not(:disabled), .composer-add:active,
+  .secondary-button:active, .primary-button:active, .composer:focus-within,
+  .suggestion-card:hover, .evidence-card:hover, .document-row:hover .document-icon,
+  .history-card:hover .history-icon, .composer-add:hover svg, .sidebar-brand:hover .brand-mark {
+    transform: none !important;
+  }
+}
