@@ -50,3 +50,25 @@ def test_telemetry_sends_only_allowlisted_metadata(monkeypatch):
     }
     assert "prompt_text" not in sent["payload"]["metrics"]
     assert "Authorization" not in sent["payload"]
+
+
+def test_telemetry_rejects_non_https_destination(monkeypatch):
+    from shared import evaluation_harness
+
+    monkeypatch.setenv("EVALUATION_HARNESS_URL", "file:///etc")
+    monkeypatch.setenv("EVALUATION_HARNESS_INGEST_TOKEN", "test-project-token")
+    called = False
+
+    def fake_urlopen(*args, **kwargs):
+        nonlocal called
+        called = True
+        return FakeResponse()
+
+    monkeypatch.setattr(evaluation_harness, "urlopen", fake_urlopen)
+
+    assert evaluation_harness.record_event(
+        event_type="run.completed",
+        status="success",
+        workflow="rag_query",
+    ) is False
+    assert called is False
