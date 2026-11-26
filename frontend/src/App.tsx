@@ -371,16 +371,16 @@ function App() {
       setStreaming(true);
       setStreamText("");
       setStatusText("Starting research");
-      let finalMessage: ChatMessage | null = null;
+      const streamState: { finalMessage: ChatMessage | null } = { finalMessage: null };
       let streamError = "";
       await streamChatMessage(activeId, text, (event) => {
         const payload = event.data as Record<string, unknown>;
         if (event.event === "status") setStatusText(String(payload.text || "Working"));
         if (event.event === "token") setStreamText((previous) => previous + String(payload.text || ""));
         if (event.event === "final") {
-          finalMessage = payload.message as ChatMessage;
-          if (finalMessage) {
-            setMessages((previous) => [...previous.filter((message) => !message.id.startsWith("optimistic-")), finalMessage as ChatMessage]);
+          streamState.finalMessage = payload.message as ChatMessage;
+          if (streamState.finalMessage) {
+            setMessages((previous) => [...previous, streamState.finalMessage as ChatMessage]);
           }
         }
         if (event.event === "error") {
@@ -388,7 +388,7 @@ function App() {
           setNotice(streamError);
         }
       });
-      if (!finalMessage) {
+      if (!streamState.finalMessage) {
         const chat = await getChat(activeId);
         setMessages(chat.messages || []);
       }
