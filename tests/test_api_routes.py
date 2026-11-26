@@ -196,3 +196,20 @@ def test_evidence_markers_are_rendered_as_source_anchors():
     assert api_main._strip_evidence_tags(
         "See the control [EVID: E02] for context."
     ) == "See the control [E02](#evidence-E02) for context."
+
+def test_legacy_render_health_path_checks_actual_readiness(monkeypatch):
+    class ReadyStore:
+        def check_ready(self):
+            return None
+
+    monkeypatch.setattr(api_main, "store", ReadyStore())
+    monkeypatch.setattr(api_main, "checkpointer", object())
+
+    response = TestClient(api_main.app).get("/_stcore/health")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "ready",
+        "workspace_store": "ok",
+        "checkpointer": "ok",
+    }

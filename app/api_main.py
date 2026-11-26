@@ -312,6 +312,7 @@ def health():
 
 
 @app.get("/ready")
+@app.get("/_stcore/health", include_in_schema=False)
 def ready():
     if checkpointer is None:
         raise HTTPException(503, "Conversation storage is not ready.")
