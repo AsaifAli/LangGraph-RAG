@@ -16,6 +16,13 @@ import {
 
 type WorkspaceView = "research" | "knowledge" | "history";
 
+function formatEvidenceCitations(content: string): string {
+  return content.replace(
+    /\\[EVID:\\s*(E\\d+)\\]/gi,
+    (_marker, id: string) => `[${id.toUpperCase()}](#evidence-${id.toUpperCase()})`,
+  );
+}
+
 function formatDate(value?: string | null): string {
   if (!value) return "Just now";
   const date = new Date(value);
@@ -80,7 +87,7 @@ function MessageBubble({ message }: { message: ChatMessage }) {
         <div className={isUser ? "message-bubble user-bubble" : "message-bubble assistant-bubble"}>
           {isUser
             ? <p>{message.content}</p>
-            : <div className="markdown-content"><ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown></div>}
+            : <div className="markdown-content"><ReactMarkdown remarkPlugins={[remarkGfm]}>{formatEvidenceCitations(message.content)}</ReactMarkdown></div>}
         </div>
       </div>
     </article>
