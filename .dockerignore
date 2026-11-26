@@ -22,3 +22,9 @@ _runs/
 POC.zip
 .pytest_cache/
 .git/
+
+# Frontend build output is generated inside the multi-stage Docker build.
+node_modules/
+frontend/dist/
+frontend/coverage/
+frontend/.vite/

@@ -269,3 +269,65 @@ Configure these server-side variables on the EvidenceFlow deployment:
 - `EVALUATION_HARNESS_INGEST_TOKEN` — the EvidenceFlow-specific token configured by the harness operator.
 
 Telemetry is best-effort. If the URL or token is missing, or the evaluation service is unavailable, EvidenceFlow continues its normal workflow without blocking the user. The website links to the shared read-only engineering assurance dashboard; this app does not run a separate harness service or require an additional provider key.
+
+
+## Dedicated spatial research workspace
+
+The primary browser interface is a dedicated React + TypeScript application. The existing Streamlit experience remains in the repository as a rollback/reference implementation while the web client is validated.
+
+The workspace is intentionally research-first rather than dashboard-first:
+
+- A quiet navigation rail for research, the knowledge base and conversation history.
+- A spacious conversation canvas for streamed LangGraph responses.
+- A contextual evidence inspector for retrieved passages, source details and agent activity.
+- Separate global-library and conversation-attached document scopes.
+- Responsive layouts, keyboard focus states and reduced-motion support.
+
+The visual system uses warm neutral surfaces, restrained green accents, clear typographic hierarchy, subtle spatial layering and minimal chrome. The product keeps its own visual identity instead of sharing a generic SaaS dashboard.
+
+### Frontend and API architecture
+
+\`\`\`text
+Browser
+  React + TypeScript (Vite build)
+        |
+        | same-origin requests + HttpOnly cookie
+        v
+FastAPI (app/api_main.py)
+  | session exchange / revocation
+  | chats and conversation metadata
+  | document upload / deletion
+  | Server-Sent Events for streamed research
+  |
+  +--> Existing LangGraph supervisor and evidence auditor
+  +--> Existing sparse-first OpenSearch retrieval
+  +--> Existing Gateway session and owner-scoped quota controls
+  +--> Existing Upstash Redis (encrypted short-lived sessions + workspace metadata)
+  +--> Existing SQLite LangGraph checkpointer
+\`\`\`
+
+The browser never receives a provider API key or reusable Gateway bearer token. A one-time \`portfolio_llm_handoff\` code is removed from the URL and exchanged by FastAPI with the existing Portfolio LLM Gateway. FastAPI stores the Gateway token encrypted server-side and gives the browser only an opaque \`HttpOnly\` session cookie. Workspace metadata is keyed by the verified owner scope, while document text and retrieval chunks remain in OpenSearch.
+
+### Local development
+
+Start the API from the repository root:
+
+\`\`\`bash
+uvicorn app.api_main:app --reload --port 8000
+\`\`\`
+
+In a second terminal, start the frontend:
+
+\`\`\`bash
+cd frontend
+npm install
+npm run dev
+\`\`\`
+
+Vite serves the app at \`http://localhost:5173\` and proxies \`/api\`, \`/health\` and \`/ready\` to the API on port 8000. Configure the existing OpenSearch, Upstash, Portfolio Gateway and provider integrations using the repository's environment settings. The original Streamlit development entry point remains available with \`streamlit run app/streamlit_app.py\` while the migration is reviewed.
+
+### Hosted build
+
+\`Dockerfile.render\` builds the frontend with Node 22, installs the existing Python application dependencies, copies the Vite production bundle into \`frontend/dist\`, and starts \`uvicorn app.api_main:app\`. The existing Render web service is reused; the Render readiness check now targets \`/ready\`. The frontend and API share one origin so session cookies remain first-party and no new frontend hosting service is required.
+
+The current LangGraph checkpointer remains SQLite in the service's \`chat_history\` data directory, as in the earlier Streamlit deployment. On hosting with ephemeral filesystems, local checkpoint files can be lost when the service is replaced. This migration does not claim cross-deploy checkpoint durability; a durable shared checkpointer is a separate infrastructure decision.
