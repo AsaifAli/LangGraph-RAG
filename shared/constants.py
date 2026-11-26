@@ -33,6 +33,7 @@ class ErrorMessages:
 
     LIBREOFFICE_NOT_FOUND = "LibreOffice not found on system"
     LIBREOFFICE_CONVERSION_FAILED = "LibreOffice conversion failed"
+    LIBREOFFICE_CONVERSION_TIMEOUT = "LibreOffice conversion timed out"
     LIBREOFFICE_NO_OUTPUT_FILE = "LibreOffice did not produce output text file"
 
     PDF_TEXT_EXTRACTION_FAILED = "Failed to extract text from PDF"
