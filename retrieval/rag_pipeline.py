@@ -797,21 +797,42 @@ def _jina_rerank(query: str, chunks: list[RetrievedChunk], *, top_n: int) -> lis
     last_error: Exception | None = None
     for attempt in range(3):
         try:
+            raw_body = bytearray()
             with httpx.Client(
                 timeout=30.0,
                 follow_redirects=False,
                 trust_env=False,
             ) as client:
-                response = client.post(endpoint, json=payload, headers=headers)
+                with client.stream(
+                    "POST",
+                    endpoint,
+                    json=payload,
+                    headers=headers,
+                ) as response:
+                    if 300 <= response.status_code < 400:
+                        raise RuntimeError("Jina rerank redirects are not allowed")
+                    response.raise_for_status()
 
-            if 300 <= response.status_code < 400:
-                raise RuntimeError("Jina rerank redirects are not allowed")
-            response.raise_for_status()
+                    content_length = response.headers.get("content-length")
+                    if content_length:
+                        try:
+                            if int(content_length) > 2_000_000:
+                                raise RuntimeError(
+                                    "Jina rerank response exceeded the size limit"
+                                )
+                        except ValueError as exc:
+                            raise RuntimeError(
+                                "Jina rerank response has an invalid Content-Length"
+                            ) from exc
 
-            if len(response.content) > 2_000_000:
-                raise RuntimeError("Jina rerank response exceeded the size limit")
+                    for chunk in response.iter_bytes():
+                        raw_body.extend(chunk)
+                        if len(raw_body) > 2_000_000:
+                            raise RuntimeError(
+                                "Jina rerank response exceeded the size limit"
+                            )
 
-            body = response.json()
+            body = json.loads(raw_body.decode("utf-8"))
             if not isinstance(body, dict):
                 raise RuntimeError("Jina rerank returned an invalid response")
 
