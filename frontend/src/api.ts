@@ -49,8 +49,6 @@ export interface DocumentRecord {
   name: string;
   document_id: string;
   chunk_count: number;
-  content_hash: string;
-  owner_scope: string;
   scope: "global" | "chat";
   created_at: string;
   visual_pages_processed?: number;
