@@ -109,9 +109,17 @@ class DocumentTextExtractor:
                         str(doc_path),
                     ],
                     check=True,
+                    stdin=subprocess.DEVNULL,
                     stdout=subprocess.DEVNULL,
-                    stderr=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                    timeout=60,
+                    shell=False,
                 )
+            except subprocess.TimeoutExpired as e:
+                raise StorageError(
+                    ErrorMessages.LIBREOFFICE_CONVERSION_TIMEOUT
+                ) from e
+
             except FileNotFoundError as e:
                 raise StorageError(ErrorMessages.LIBREOFFICE_NOT_FOUND) from e
 
