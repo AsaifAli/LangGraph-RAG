@@ -18,7 +18,7 @@ type WorkspaceView = "research" | "knowledge" | "history";
 
 function formatEvidenceCitations(content: string): string {
   return content.replace(
-    /\\[EVID:\\s*(E\\d+)\\]/gi,
+    /\[EVID:\s*(E\d+)\]/gi,
     (_marker, id: string) => `[${id.toUpperCase()}](#evidence-${id.toUpperCase()})`,
   );
 }
