@@ -100,16 +100,70 @@ def _strip_evidence_tags(value: str) -> str:
 
 
 def _safe_outcome(outcome: dict[str, Any]) -> dict[str, Any]:
-    """Convert graph results to bounded JSON metadata for the browser/history."""
-    safe = dict(outcome)
+    """Return only bounded, UI-relevant answer metadata; never persist owner IDs."""
+    safe = {
+        key: outcome[key]
+        for key in (
+            "abstained",
+            "abstention_reason",
+            "grounding_status",
+            "quality",
+            "trust",
+            "used_knowledge_base",
+            "used_web",
+            "used_primary_source",
+            "token_usage",
+            "verified_count",
+            "proposed_count",
+        )
+        if key in outcome
+    }
+    safe["final_answer"] = _strip_evidence_tags(outcome.get("final_answer", ""))
+
     chunks = []
     for chunk in outcome.get("chunks") or []:
         item = asdict(chunk) if is_dataclass(chunk) else dict(chunk)
-        item["content"] = str(item.get("content") or "")[:2400]
+        metadata = item.get("meta_data") if isinstance(item.get("meta_data"), dict) else {}
+        item["meta_data"] = {
+            key: metadata[key]
+            for key in (
+                "source_name", "file_name", "document_name", "page_no",
+                "section", "modality", "title", "url",
+            )
+            if key in metadata
+        }
+        item.pop("owner_scope", None)
+        item["content"] = str(item.get("content") or "")[:1400]
         chunks.append(item)
-    safe["chunks"] = chunks[:12]
-    safe["web_sources"] = (outcome.get("web_sources") or [])[:12]
-    safe["final_answer"] = _strip_evidence_tags(outcome.get("final_answer", ""))
+    safe["chunks"] = chunks[:8]
+
+    web_sources = []
+    for source in outcome.get("web_sources") or []:
+        source_data = asdict(source) if is_dataclass(source) else (
+            dict(source) if isinstance(source, dict) else jsonable_encoder(source)
+        )
+        if not isinstance(source_data, dict):
+            continue
+        web_sources.append({
+            key: str(source_data.get(key) or "")[:1200]
+            for key in ("title", "url", "snippet", "domain", "source_name")
+            if source_data.get(key) is not None
+        })
+    safe["web_sources"] = web_sources[:8]
+
+    delegations = []
+    for step in outcome.get("delegations") or outcome.get("agent_trace") or []:
+        step_data = asdict(step) if is_dataclass(step) else (
+            dict(step) if isinstance(step, dict) else jsonable_encoder(step)
+        )
+        if not isinstance(step_data, dict):
+            continue
+        delegations.append({
+            key: str(step_data.get(key) or "")[:500]
+            for key in ("agent", "subagent_type", "description", "responsibility", "result")
+            if step_data.get(key) is not None
+        })
+    safe["delegations"] = delegations[:12]
     return jsonable_encoder(safe)
 
 
@@ -134,6 +188,35 @@ def _find_chat(state: dict[str, Any], thread_id: str) -> dict[str, Any] | None:
         (chat for chat in state["chats"] if chat.get("thread_id") == thread_id),
         None,
     )
+
+
+def _public_document(document: dict[str, Any]) -> dict[str, Any]:
+    """Expose only the document metadata the browser needs to display or remove it."""
+    public_fields = (
+        "name",
+        "document_id",
+        "chunk_count",
+        "scope",
+        "created_at",
+        "visual_pages_processed",
+        "visual_pages_skipped",
+        "modalities",
+    )
+    return {key: document[key] for key in public_fields if key in document}
+
+
+def _public_chat(chat: dict[str, Any]) -> dict[str, Any]:
+    """Project server-side chat state into the browser-safe response contract."""
+    public = {
+        key: chat[key]
+        for key in ("thread_id", "title", "messages", "created_at", "updated_at")
+        if key in chat
+    }
+    public["uploaded_docs"] = [
+        _public_document(document)
+        for document in chat.get("uploaded_docs", [])
+    ]
+    return public
 
 
 def _session_from_request(request: Request) -> tuple[str, dict[str, Any]]:
@@ -349,7 +432,7 @@ def get_chat(thread_id: str, session=Depends(require_session)):
     chat = _find_chat(state, thread_id)
     if chat is None:
         raise HTTPException(404, "Conversation not found.")
-    return chat
+    return _public_chat(chat)
 
 
 @app.delete("/api/v1/chats/{thread_id}")
@@ -398,7 +481,7 @@ def list_documents(
             documents.extend(filter_documents_for_owner(chat.get("uploaded_docs", []), details["owner_scope"]))
         elif scope == "chat":
             raise HTTPException(422, "thread_id is required for chat-scoped documents.")
-    return {"data": documents}
+    return {"data": [_public_document(document) for document in documents]}
 
 
 @app.post("/api/v1/documents", status_code=201)
@@ -432,7 +515,7 @@ async def upload_document(
             None,
         )
         if duplicate:
-            return {"document": duplicate, "duplicate": True}
+            return {"document": _public_document(duplicate), "duplicate": True}
         result = await ingest_document(
             content,
             source_name=source_name,
@@ -460,7 +543,7 @@ async def upload_document(
     }
     target_documents.append(document)
     _save_workspace(owner_scope, state)
-    return {"document": document, "duplicate": False}
+    return {"document": _public_document(document), "duplicate": False}
 
 
 @app.delete("/api/v1/documents/{document_id}")
