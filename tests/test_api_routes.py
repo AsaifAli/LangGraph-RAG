@@ -53,6 +53,7 @@ def test_session_status_never_exposes_gateway_bearer_or_owner_scope(monkeypatch)
     assert body["model"] == "openai/gpt-4o-mini"
     assert "access_token" not in body
     assert "owner_scope" not in body
+    assert response.headers["cache-control"] == "no-store"
 
 
 def test_chat_records_are_inaccessible_across_verified_owner_scopes(monkeypatch):
@@ -92,3 +93,60 @@ def test_chat_records_are_inaccessible_across_verified_owner_scopes(monkeypatch)
 
     assert owner_a_read.status_code == 200
     assert owner_b_read.status_code == 404
+
+
+
+def test_document_api_omits_internal_owner_scope_and_content_hash(monkeypatch):
+    test_store = _test_store()
+    monkeypatch.setattr(api_main, "store", test_store)
+    owner_scope = "c" * 64
+    session_id = test_store.create_session(
+        access_token="gateway-token",
+        owner_scope=owner_scope,
+        provider="",
+        model="",
+        expires_in=600,
+    )
+    document = {
+        "name": "sample.pdf",
+        "document_id": "document-123",
+        "chunk_count": 8,
+        "content_hash": "private-content-fingerprint",
+        "owner_scope": owner_scope,
+        "scope": "global",
+        "created_at": "2026-11-26T00:00:00+00:00",
+    }
+    chat_document = {
+        **document,
+        "document_id": "document-chat-456",
+        "scope": "chat",
+    }
+    thread_id = "d" * 32
+    test_store.save_workspace(
+        owner_scope,
+        {
+            "global_documents": [document],
+            "chats": [{
+                "thread_id": thread_id,
+                "title": "Private chat",
+                "messages": [],
+                "uploaded_docs": [chat_document],
+                "created_at": "2026-11-26T00:00:00+00:00",
+                "updated_at": "2026-11-26T00:00:00+00:00",
+            }],
+        },
+    )
+
+    client = TestClient(api_main.app)
+    headers = {"Cookie": f"{api_main.COOKIE_NAME}={session_id}"}
+    library_response = client.get("/api/v1/documents?scope=global", headers=headers)
+    chat_response = client.get(f"/api/v1/chats/{thread_id}", headers=headers)
+
+    assert library_response.status_code == 200
+    assert chat_response.status_code == 200
+    public_library_document = library_response.json()["data"][0]
+    public_chat_document = chat_response.json()["uploaded_docs"][0]
+    for public_document in (public_library_document, public_chat_document):
+        assert public_document["document_id"]
+        assert "owner_scope" not in public_document
+        assert "content_hash" not in public_document
