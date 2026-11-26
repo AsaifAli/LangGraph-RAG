@@ -7,8 +7,9 @@ import logging
 import math
 import os
 import uuid
-from urllib.error import URLError
-from urllib.request import Request, urlopen
+from urllib.parse import urlsplit
+
+import httpx
 
 LOGGER = logging.getLogger(__name__)
 
@@ -54,20 +55,43 @@ def record_event(
         "request_id": str(request_id)[:100] if request_id else None,
         "metrics": safe_metrics,
     }
-    request = Request(
-        f"{base_url}/api/application-events",
-        data=json.dumps(payload, allow_nan=False).encode("utf-8"),
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-        },
-        method="POST",
-    )
     try:
-        with urlopen(request, timeout=1.25) as response:
-            return 200 <= int(response.status) < 300
-    except (URLError, TimeoutError, OSError, ValueError):
+        parsed = urlsplit(base_url)
+        scheme = parsed.scheme.lower()
+        hostname = (parsed.hostname or "").rstrip(".").lower()
+        port = parsed.port
+    except ValueError:
+        return False
+
+    local_http = scheme == "http" and hostname in {"localhost", "127.0.0.1", "::1"}
+    if (
+        not hostname
+        or (scheme != "https" and not local_http)
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+        or port not in ({None, 443} if scheme == "https" else {None, 80})
+    ):
+        return False
+
+    try:
+        with httpx.Client(
+            timeout=1.25,
+            follow_redirects=False,
+            trust_env=False,
+        ) as client:
+            response = client.post(
+                f"{base_url}/api/application-events",
+                json=payload,
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json",
+                    "Accept": "application/json",
+                },
+            )
+        return 200 <= int(response.status_code) < 300
+    except (httpx.HTTPError, TimeoutError, OSError, ValueError):
         LOGGER.debug("Evaluation telemetry delivery failed; continuing without it.")
         return False
     except Exception:
