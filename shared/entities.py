@@ -4,7 +4,7 @@ operates on. `SecureAgentRequest.__post_init__` enforces a real
 be a `SanitizedQuery` instance, not a plain string or dict, so a caller
 can't accidentally pass unvalidated input through to retrieval. This app
 has no upstream sanitization step of its own (queries come straight from
-the Streamlit chat box), so `SanitizedQuery` here validates only
+the authenticated API request), so `SanitizedQuery` here validates only
 structural non-emptiness rather than redacting anything — the type still
 exists to keep the retrieval-layer contract explicit."""
 
@@ -18,7 +18,7 @@ from uuid import UUID
 class SanitizedInput:
     """Immutable contract guaranteeing that input has been sanitized
     upstream. This POC has no Delivery-layer sanitization step (queries
-    come straight from the Streamlit chat box) — `SanitizedQuery(content=q)`
+    come straight from the authenticated API request) — `SanitizedQuery(content=q)`
     is constructed directly wherever `SecureAgentRequest` requires one,
     so this validates only structural non-emptiness, never redacts
     anything."""

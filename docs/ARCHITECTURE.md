@@ -1,52 +1,42 @@
-# Architecture
+# EvidenceFlow API architecture
 
 ## Request flow
 
-```text
-User
-  |
-  v
-Streamlit UI
-  |
-  v
-LangGraph StateGraph
-  |
-  +--> Route / tool calling
-  |      |
-  |      +--> Knowledge Base
-  |      |      Lexical retrieval
-  |      |        -> optional neural sparse
-  |      |        -> RRF
-  |      |        -> cross-encoder rerank
-  |      |        -> bounded agentic query expansion
-  |      |        -> chunk analysis
-  |      |
-  |      +--> Web Research
-  |             Search -> evidence -> synthesis
-  |
-  v
-Evidence-aware synthesis
-  |
-  v
-Deterministic citation verifier
-  |
-  v
-Citation QA + numeric/date support checks
-  |
-  v
-Final answer + citations + telemetry
-```
+    Authenticated client workspace
+      |
+      v
+    Studio same-origin BFF /api/v1
+      | workspace identity + scoped HttpOnly app cookie
+      v
+    EvidenceFlow FastAPI
+      | session exchange / revocation
+      | chats and conversation metadata
+      | document upload / deletion
+      | Server-Sent Events for status, safe task lifecycle, tokens and final outcome
+      |
+      +--> LangGraph supervisor and evidence auditor
+      +--> sparse-first OpenSearch retrieval
+      +--> optional web / primary-source research
+      +--> shared Portfolio Gateway inference
+      +--> owner-scoped quotas and API session store
+      - SQLite LangGraph checkpointer
 
 ## Retrieval strategy
 
-The knowledge base uses a sparse-first design. OpenSearch performs classical lexical retrieval with BM25, exact/phrase/fuzzy matching, field boosting, and tenant/document filtering. When enabled, OpenSearch neural sparse retrieval adds learned sparse semantic signals while continuing to use an inverted-index-based search path. The candidate lists are fused with reciprocal rank fusion and optionally reranked locally with a cross-encoder.
+The knowledge base uses OpenSearch lexical retrieval with BM25, exact/phrase/fuzzy matching, field boosting, and tenant/document filtering. When enabled, OpenSearch neural sparse retrieval adds learned sparse semantic signals while continuing to use an inverted-index-based search path. Candidate lists are fused with reciprocal-rank fusion and optionally reranked with a cross-encoder.
 
-For difficult queries, the LangGraph retrieval layer can ask the LLM to generate a small number of alternative lexical queries. Those alternatives are then executed by OpenSearch; the LLM is not used as a 100-document relevance ranker. The loop is capped in code to protect latency and token cost.
+For difficult queries, the LangGraph retrieval layer can ask the LLM to generate a bounded set of alternative lexical queries. Those alternatives are executed by OpenSearch.
 
 ## Evidence and QA
 
-Retrieved chunks carry stable evidence IDs and source metadata. The final answer's `[EVID: E<n>]` markers are checked against the exact evidence set supplied to the model. Guardrails treat retrieved documents and web results as untrusted data and prevent retrieved text from authorizing tool behavior.
+Retrieved chunks carry stable evidence IDs and source metadata. Final-answer evidence markers are checked against the exact evidence set supplied to the model. Guardrails treat retrieved documents and web results as untrusted data and prevent retrieved text from authorizing tool behavior.
+
+## Document ingestion
+
+The API validates upload size, file signature, Office/ODF package members, archive entry count, archive paths and expanded size before parsing. Spreadsheet extractors preserve worksheet names, rows and values; presentation and OpenDocument extractors preserve slide/sheet structure. Extracted sections are chunked and indexed under the verified owner scope.
+
+The research stream reports approved LangGraph node lifecycle events using static client-safe labels. This makes agent execution observable without exposing private prompts, chain-of-thought, model internals or raw tool output. The independent evidence auditor remains the release gate for answer tokens.
 
 ## Persistence
 
-LangGraph's SQLite checkpointer stores conversational state. Streamlit keeps a separate JSON session index for UI rendering. Runtime state is intentionally excluded from source control.
+LangGraph's SQLite checkpointer stores conversational state. Workspace metadata and encrypted short-lived Gateway session records use the configured API store. OpenSearch retains document chunks and retrieval metadata. Runtime state is intentionally excluded from source control.

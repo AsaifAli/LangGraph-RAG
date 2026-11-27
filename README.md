@@ -1,4 +1,4 @@
-# EvidenceFlow — Verified Sparse-First RAG & Research
+# EvidenceFlow API — Verified Sparse-First RAG & Research
 
 > **LangGraph-based agentic RAG for research and document intelligence, built around sparse-first retrieval, evidence provenance, citation verification, and fail-closed answers.**
 
@@ -190,15 +190,17 @@ The retrieval architecture follows the same principle: **sparse retrieval remain
 
 This separation keeps the trust layer practical and focused instead of turning the project into a generic LLM evaluation framework.
 
-## Deployment
+## API-first deployment
 
-The project includes a containerized Render deployment configuration with a Streamlit health check, OpenSearch connectivity, optional web research, and configurable Jina reranking.
+EvidenceFlow is deployed as an API service. It does not ship a standalone product UI. The OpenAPI schema and interactive API reference are served at /openapi.json and /docs; health and readiness are available at /health and /ready. The authenticated Studio workspace provides a protected API guide and sends requests through its same-origin, client-scoped proxy.
+
+The document ingestion API supports PDF, legacy DOC, DOCX, XLS, XLSX, XLSM, XLSB, ODS, PPTX, ODP, ODT, RTF, TXT, Markdown, CSV, TSV, JSON, XML, YAML, TOML, INI, logs, HTML, EML, SQL, common source/config text and PNG/JPG/WEBP/BMP/TIFF images. Text and tables are extracted into attributable passages; visual analysis for image/scanned content remains subject to the existing multimodal configuration. The extraction pipeline applies upload-size, archive-expansion, archive-path and format-signature validation.
 
 ### Secure portfolio demo session
 
-When EvidenceFlow is launched from the AI Engineering Studio portfolio, the app receives a short-lived, single-use handoff code. It removes `portfolio_llm_handoff` from the URL immediately, exchanges the code server-side with the shared Portfolio LLM Gateway, and stores the resulting short-lived bearer token only in Streamlit session state. The legacy `portfolio_llm_session` JWT query parameter is rejected.
+When EvidenceFlow is launched from the AI Engineering Studio client workspace, the API receives a short-lived, single-use handoff code. The Studio proxy removes launch credentials from the browser URL, exchanges the code server-side with EvidenceFlow and the shared Portfolio LLM Gateway, and stores the resulting session only in client-scoped HttpOnly cookies and the backend session store. The legacy portfolio_llm_session JWT query parameter is rejected.
 
-Configure `PORTFOLIO_SESSION_GATEWAY_URL` in the Streamlit hosting environment with the shared Portfolio LLM Gateway root URL, for example `https://portfolio-llm-gateway.onrender.com`. Do not point this setting at the local generic LiteLLM service. The regular `LLM_GATEWAY_URL` continues to configure the OpenAI-compatible inference endpoint.
+Configure `PORTFOLIO_SESSION_GATEWAY_URL` in the EvidenceFlow API service environment with the shared Portfolio LLM Gateway root URL, for example `https://portfolio-llm-gateway.onrender.com`. Do not point this setting at the local generic LiteLLM service. The regular `LLM_GATEWAY_URL` continues to configure the OpenAI-compatible inference endpoint.
 
 Key deployment settings include:
 
@@ -252,7 +254,7 @@ The test suite and focused trust-layer regression tests cover areas including:
 
 ## Tech stack
 
-`Python` · `LangGraph` · `OpenSearch` · `BM25` · `Neural Sparse` · `RRF` · `Jina AI` · `Streamlit` · `Docker` · `OpenRouter` · `Tavily`
+`Python` · `LangGraph` · `OpenSearch` · `BM25` · `Neural Sparse` · `RRF` · `Jina AI` · `FastAPI` · `Docker` · `OpenRouter` · `Tavily`
 
 ## Repository
 
@@ -271,63 +273,25 @@ Configure these server-side variables on the EvidenceFlow deployment:
 Telemetry is best-effort. If the URL or token is missing, or the evaluation service is unavailable, EvidenceFlow continues its normal workflow without blocking the user. The website links to the shared read-only engineering assurance dashboard; this app does not run a separate harness service or require an additional provider key.
 
 
-## Dedicated spatial research workspace
+## API contract and local development
 
-The primary browser interface is a dedicated React + TypeScript application. The existing Streamlit experience remains in the repository as a rollback/reference implementation while the web client is validated.
+EvidenceFlow is an API, not a separate chat interface. The authenticated AI Engineering Studio workspace displays the API contract and sends requests through the same-origin client-scoped proxy. Direct service documentation is available from /docs and /openapi.json.
 
-The workspace is intentionally research-first rather than dashboard-first:
+The main route groups are:
 
-- A quiet navigation rail for research, the knowledge base and conversation history.
-- A spacious conversation canvas for streamed LangGraph responses.
-- A contextual evidence inspector for retrieved passages, source details and agent activity.
-- Separate global-library and conversation-attached document scopes.
-- Responsive layouts, keyboard focus states and reduced-motion support.
+- Sessions: GET /api/v1/session, POST /api/v1/session/exchange, POST /api/v1/session/revoke.
+- Conversations: GET/POST /api/v1/chats, GET/DELETE /api/v1/chats/{thread_id}.
+- Documents: GET/POST /api/v1/documents, DELETE /api/v1/documents/{document_id}.
+- Research: POST /api/v1/chats/{thread_id}/messages (Server-Sent Events).
 
-The visual system uses warm neutral surfaces, restrained green accents, clear typographic hierarchy, subtle spatial layering and minimal chrome. The product keeps its own visual identity instead of sharing a generic SaaS dashboard.
+The research stream emits status, task, token, final and error events. Task events report a bounded lifecycle (running, completed or failed) for approved workflow steps such as request planning, knowledge retrieval, chunk analysis, document summarization, web/primary-source research and answer synthesis. These are operational progress signals only: prompts, hidden chain-of-thought, raw tool output and private intermediate model content are not exposed. Final responses retain the existing evidence-audit gate; answer tokens are released only after the independent audit passes.
 
-### Frontend and API architecture
+Document upload supports PDF, DOC/DOCX, XLS/XLSX/XLSM/XLSB, ODS, PPT/PPTX/ODP, ODT, RTF, TXT, Markdown, CSV, TSV, JSON, XML, YAML, TOML, INI, LOG, HTML, EML, SQL, common source/config text files and PNG/JPG/WEBP/BMP/TIFF images. Workbook extraction preserves sheet names, headers and cell values. Image and scanned-PDF visual descriptions remain subject to the existing multimodal configuration.
 
-\`\`\`text
-Browser
-  React + TypeScript (Vite build)
-        |
-        | same-origin requests + HttpOnly cookie
-        v
-FastAPI (app/api_main.py)
-  | session exchange / revocation
-  | chats and conversation metadata
-  | document upload / deletion
-  | Server-Sent Events for streamed research
-  |
-  +--> Existing LangGraph supervisor and evidence auditor
-  +--> Existing sparse-first OpenSearch retrieval
-  +--> Existing Gateway session and owner-scoped quota controls
-  +--> Existing Upstash Redis (encrypted short-lived sessions + workspace metadata)
-  +--> Existing SQLite LangGraph checkpointer
-\`\`\`
+Run the API locally from the repository root:
 
-The browser never receives a provider API key or reusable Gateway bearer token. A one-time \`portfolio_llm_handoff\` code is removed from the URL and exchanged by FastAPI with the existing Portfolio LLM Gateway. FastAPI stores the Gateway token encrypted server-side and gives the browser only an opaque \`HttpOnly\` session cookie. Workspace metadata is keyed by the verified owner scope, while document text and retrieval chunks remain in OpenSearch.
+    uvicorn app.api_main:app --reload --port 8000
 
-### Local development
+Both Dockerfiles start the API on port 8000. Docker Compose maps it to port 18000 locally. The client workspace calls EvidenceFlow through the Studio same-origin proxy; provider credentials and reusable Gateway bearers remain server-side.
 
-Start the API from the repository root:
-
-\`\`\`bash
-uvicorn app.api_main:app --reload --port 8000
-\`\`\`
-
-In a second terminal, start the frontend:
-
-\`\`\`bash
-cd frontend
-npm install
-npm run dev
-\`\`\`
-
-Vite serves the app at \`http://localhost:5173\` and proxies \`/api\`, \`/health\` and \`/ready\` to the API on port 8000. Configure the existing OpenSearch, Upstash, Portfolio Gateway and provider integrations using the repository's environment settings. The original Streamlit development entry point remains available with \`streamlit run app/streamlit_app.py\` while the migration is reviewed.
-
-### Hosted build
-
-\`Dockerfile.render\` builds the frontend with Node 22, installs the existing Python application dependencies, copies the Vite production bundle into \`frontend/dist\`, and starts \`uvicorn app.api_main:app\`. The existing Render web service is reused; the Render readiness check now targets \`/ready\`. The frontend and API share one origin so session cookies remain first-party and no new frontend hosting service is required.
-
-The current LangGraph checkpointer remains SQLite in the service's \`chat_history\` data directory, as in the earlier Streamlit deployment. On hosting with ephemeral filesystems, local checkpoint files can be lost when the service is replaced. This migration does not claim cross-deploy checkpoint durability; a durable shared checkpointer is a separate infrastructure decision.
+The current LangGraph checkpointer remains SQLite in the service's chat_history data directory. On hosting with ephemeral filesystems, local checkpoint files can be lost when the service is replaced. This does not claim cross-deploy checkpoint durability; a durable shared checkpointer is a separate infrastructure decision.

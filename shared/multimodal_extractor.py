@@ -187,17 +187,9 @@ def _extract_text_document(
 ) -> str:
     """Reuse EvidenceFlow's existing text extraction implementation."""
 
-    from shared.text_extractors import DocumentTextExtractor
+    from shared.document_extraction import extract_document_text
 
-    extractor = DocumentTextExtractor()
-
-    if suffix == ".docx":
-        return extractor.docx_bytes_to_text(content)
-
-    if suffix == ".doc":
-        return extractor.doc_bytes_to_text(content)
-
-    return extractor.txt_bytes_to_text(content)
+    return extract_document_text(content, "document" + suffix)
 
 
 async def _extract_docx_images(
@@ -273,8 +265,9 @@ async def extract_multimodal_sections(
     """Extract searchable evidence from documents and visual files.
 
     Supported:
-        TXT, MD, CSV, PDF, DOC, DOCX
-        PNG, JPG, JPEG, WEBP, BMP, TIFF
+        PDF, DOC/DOCX, XLS/XLSX/XLSM/XLSB, ODT/ODS, PPTX/ODP,
+        RTF, TXT, MD, CSV, TSV, JSON, XML, YAML, TOML, INI, LOG,
+        HTML, EML, SQL, common source/config text, and raster images.
 
     PDF text and visual descriptions are kept as page-specific sections.
     DOCX text extraction is reused from the existing extractor; embedded
@@ -534,17 +527,18 @@ async def extract_multimodal_sections(
     # ---------------------------------------------------------
 
     supported_text_suffixes = {
-        ".txt",
-        ".md",
-        ".csv",
-        ".doc",
+        ".txt", ".md", ".csv", ".tsv", ".json", ".xml", ".yaml", ".yml",
+        ".toml", ".ini", ".log", ".html", ".htm", ".eml", ".sql", ".py",
+        ".js", ".ts", ".css", ".sh", ".conf", ".doc", ".xls", ".xlsx",
+        ".xlsm", ".xlsb", ".ods", ".pptx", ".odt", ".odp", ".rtf",
     }
 
     if suffix not in supported_text_suffixes:
         raise ValueError(
             f"Unsupported file type: {suffix or '(no extension)'}. "
-            "Supported: TXT, MD, CSV, PDF, DOC, DOCX, PNG, JPG, "
-            "WEBP, BMP and TIFF."
+            "Supported: PDF, DOC/DOCX, XLS/XLSX/XLSM/XLSB, ODT/ODS, "
+            "PPTX/ODP, RTF, TXT, MD, CSV, TSV, JSON, XML, YAML, HTML, "
+            "TOML, INI, LOG and PNG/JPG/WEBP/BMP/TIFF."
         )
 
     text = _extract_text_document(
@@ -557,11 +551,11 @@ async def extract_multimodal_sections(
             f"{source_name} contains no extractable text."
         )
 
-    modality = (
-        "table-text"
-        if suffix == ".csv"
-        else "text"
-    )
+    table_suffixes = {
+        ".csv", ".tsv", ".xls", ".xlsx", ".xlsm", ".xlsb", ".ods",
+        ".pptx", ".odp",
+    }
+    modality = "table-text" if suffix in table_suffixes else "text"
 
     return ExtractionResult(
         sections=[

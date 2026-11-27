@@ -1,62 +1,59 @@
-# EvidenceFlow deployment readiness
+# EvidenceFlow API deployment readiness
 
 ## Deployment topology
 
-The repository includes a single Render web service, `evidenceflow-langgraph`, defined in `render.yaml`. It runs the Streamlit application and exposes Streamlit's `/_stcore/health` health endpoint.
+EvidenceFlow is a FastAPI service deployed on the existing Render web service, evidenceflow-langgraph, defined in render.yaml. The service is API-only: the Render image does not build or serve a React or Streamlit application.
 
-**Verified hosted URL:** https://langgraph-rag-hdkn.onrender.com
+Hosted API: https://langgraph-rag-hdkn.onrender.com
+API reference: https://langgraph-rag-hdkn.onrender.com/docs
+OpenAPI schema: https://langgraph-rag-hdkn.onrender.com/openapi.json
+Health: https://langgraph-rag-hdkn.onrender.com/health
+Readiness: https://langgraph-rag-hdkn.onrender.com/ready
 
-The hosted application depends on an externally provisioned OpenSearch endpoint and externally supplied model/research credentials. The Render Blueprint declares these as environment variables; it does not provision an OpenSearch cluster or third-party provider accounts.
+The client workspace uses the website's same-origin API proxy. Workspace authentication, project-scoped Gateway exchange, and EvidenceFlow's per-client HttpOnly session cookie remain server-side. The API never exposes a reusable Gateway bearer to browser code.
 
-## Live verification — November 25, 2026
+## Live service check — 27 November 2026
 
-The correct hosted URL was checked directly:
+The hosted service was checked directly during this change:
 
-- `https://langgraph-rag-hdkn.onrender.com/_stcore/health` returned `ok`.
-- The root workspace loaded and displayed the EvidenceFlow Agentic RAG research interface.
-- The workspace displayed **OpenSearch: connected**.
-- The workspace displayed OpenRouter and web search as configured.
+- /health returned HTTP 200.
+- /ready returned HTTP 200.
 
-This confirms that the hosted Streamlit application is reachable and its displayed OpenSearch connection check succeeds. It does not, by itself, prove a complete document-ingestion, retrieval, citation-verification, or long-running research workflow. Those still require a synthetic end-to-end test.
-
-Use this hostname for the portfolio link and deployment checks. The previously checked `evidenceflow-langgraph.onrender.com` hostname was not the correct live service URL.
+This confirms that the HTTP service and its readiness dependencies responded at the time of the check. It does not, by itself, prove a complete upload, indexing, retrieval, citation-verification, or research workflow. Those still require a synthetic end-to-end test against the live workspace and configured external services.
 
 ## Required hosted configuration
 
-Set the following values in the EvidenceFlow Render service:
+The Render manifest declares the externally managed settings. The service depends on:
 
-- `OPENSEARCH_URL`
-- `OPENSEARCH_USERNAME`
-- `OPENSEARCH_PASSWORD`
-- `JINA_API_KEY` for the hosted Jina reranker
-- `OPENROUTER_API_KEY`
-- `TAVILY_API_KEY` when web research is enabled
-- `KATZILLA_API_KEY` when the optional primary-source integration is enabled
-- `EVALUATION_HARNESS_INGEST_TOKEN` for best-effort, content-free activity reporting
+- OpenSearch endpoint and credentials.
+- Jina reranking key when hosted reranking is enabled.
+- Portfolio LLM Gateway URL and its identity-validation configuration.
+- OpenRouter or other configured inference provider credentials.
+- Tavily and optional primary-source credentials when those tools are enabled.
+- The EvidenceFlow telemetry token when content-free evaluation events are enabled.
 
-The Render manifest sets `OPENSEARCH_NEURAL_SPARSE=false` by default. Classical OpenSearch lexical/BM25 retrieval is the baseline. Optional neural-sparse retrieval requires a compatible OpenSearch deployment and model pipeline. Do not enable it until that capability is provisioned and tested.
+Render does not provision OpenSearch or third-party provider accounts. Do not copy user BYOK keys into the EvidenceFlow service environment; client provider credentials remain owned by the shared Portfolio Gateway.
 
-The hosted manifest configures the Jina reranking backend. Confirm the Jina key and upstream quota before treating reranking as operational; the application should retain its documented fallback behavior when the reranker is unavailable.
+## Document ingestion
 
-The shared Portfolio LLM Gateway is the BYOK inference boundary. The website remains the provider-credential owner. Do not place user provider keys in the EvidenceFlow frontend or commit secrets.
+The API validates upload size, file signatures and Office/ODF archive boundaries before parsing. Supported types are listed at the service root and in the OpenAPI/Studio API reference. Spreadsheet extraction includes XLS, XLSX, XLSM, XLSB and ODS; presentations include PPTX and ODP.
+
+Use synthetic material for validation. Check that a spreadsheet's sheet names, headers and cell values are present in indexed evidence before testing a query that depends on a particular cell.
 
 ## Readiness checklist
 
-1. Confirm the Streamlit health route returns `ok`.
-2. Confirm the workspace loads and OpenSearch reports connected.
-3. Upload a small synthetic document and verify ingestion.
-4. Ask a question that requires that document and verify retrieval.
-5. Inspect citations and confirm they resolve to the evidence used in the current turn.
-6. Test an insufficient-evidence question and confirm the application does not fabricate supporting evidence.
-7. Launch from the portfolio website and verify the one-time Gateway handoff.
-8. Confirm a content-free telemetry event is accepted when the application ingestion token and the harness token map are configured.
+1. Confirm /health, /ready, /docs and /openapi.json respond.
+2. Launch EvidenceFlow API from an authenticated client workspace and verify that the session is established.
+3. Upload a small synthetic PDF and workbook through POST /api/v1/documents.
+4. Verify the uploaded records appear through GET /api/v1/documents.
+5. Ask a question that requires a value in the workbook and inspect the cited evidence.
+6. Test insufficient evidence and confirm the API abstains rather than inventing support.
+7. Revoke the EvidenceFlow session and verify the per-client session is no longer active.
 
 ## Local reproducibility
 
-The local Docker profile remains the reproducible development path:
+Start the API with Docker Compose:
 
-```bash
-docker compose up --build
-```
+    docker compose up --build
 
-Use synthetic/demo material until external access controls, tenant isolation, retention, and data-handling requirements for real documents have been reviewed.
+The API listens on port 8000 in the container and is mapped to port 18000 on the local host. Use the interactive reference at /docs.

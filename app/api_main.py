@@ -28,8 +28,7 @@ from fastapi import (
 )
 from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
@@ -62,6 +61,20 @@ EVIDENCE_TAG_PATTERN = re.compile(r"\s*\[EVID:\s*(E\d+)\]", re.IGNORECASE)
 MAX_MESSAGES_PER_CHAT = 100
 MAX_CHATS_PER_OWNER = 100
 MAX_AGENT_CACHE = 64
+
+# Public progress events are a deliberately small, static vocabulary. The API
+# never relays arbitrary LangGraph event names, prompts, intermediate outputs
+# or model reasoning to client-facing activity views.
+PUBLIC_TASKS = {
+    "route": ("Plan research", "Classify the request and choose relevant research branches."),
+    "retrieve_kb": ("Search knowledge base", "Retrieve relevant passages from the client's indexed documents."),
+    "analyze_chunk": ("Analyze evidence", "Inspect retrieved passages and extract relevant supporting facts."),
+    "summarize_document": ("Summarize documents", "Consolidate evidence across related document sections."),
+    "research_web": ("Search public sources", "Gather relevant external information when the request needs it."),
+    "research_primary_source": ("Check primary sources", "Consult approved primary-source data connectors."),
+    "synthesize": ("Synthesize answer", "Combine selected evidence into a grounded response."),
+}
+PUBLIC_TASK_ID_PATTERN = re.compile(r"^(?:route|retrieve_kb|analyze_chunk|summarize_document|research_web|research_primary_source|synthesize)-[1-9][0-9]{0,5}$")
 
 store = EvidenceFlowStore()
 checkpointer: AsyncSqliteSaver | None = None
@@ -97,6 +110,31 @@ def _utc_now() -> str:
 
 def _json_for_sse(event: str, payload: dict[str, Any]) -> str:
     return f"event: {event}\ndata: {json.dumps(jsonable_encoder(payload), separators=(',', ':'))}\n\n"
+
+
+def _public_task_update(event: Any) -> dict[str, Any] | None:
+    """Return a minimal, client-safe task lifecycle event."""
+    if not isinstance(event, dict):
+        return None
+    name = event.get("name")
+    details = PUBLIC_TASKS.get(name) if isinstance(name, str) else None
+    task_id = event.get("id")
+    status = event.get("status")
+    if (
+        details is None
+        or not isinstance(task_id, str)
+        or not PUBLIC_TASK_ID_PATTERN.fullmatch(task_id)
+        or status not in {"running", "completed", "failed"}
+    ):
+        return None
+    label, description = details
+    return {
+        "id": task_id,
+        "name": name,
+        "label": label,
+        "description": description,
+        "status": status,
+    }
 
 
 def _strip_evidence_tags(value: str) -> str:
@@ -263,14 +301,14 @@ async def lifespan(_: FastAPI):
 app = FastAPI(
     title="EvidenceFlow API",
     version="1.0.0",
-    description="Owner-scoped research workspace over the existing LangGraph and sparse-first RAG engine.",
+    description="API-only, client-scoped research and document intelligence service. Supports secure document ingestion, sparse-first retrieval, evidence verification and streamed research responses.",
     lifespan=lifespan,
 )
 
 _DEFAULT_DEV_ORIGINS = (
     ""
     if _is_production()
-    else "http://localhost:5173,http://127.0.0.1:5173"
+    else "http://localhost:3000,http://127.0.0.1:3000"
 )
 _ALLOWED_ORIGINS = [
     value.strip().rstrip("/")
@@ -316,7 +354,6 @@ def health():
 
 
 @app.get("/ready")
-@app.get("/_stcore/health", include_in_schema=False)
 def ready():
     if checkpointer is None:
         raise HTTPException(503, "Conversation storage is not ready.")
@@ -725,6 +762,10 @@ async def stream_chat_message(
                     async for event in astream_langgraph_turn(agent, message, thread_id=thread_id):
                         if event.get("type") == "status":
                             yield _json_for_sse("status", {"text": event.get("text", "")})
+                        elif event.get("type") == "task":
+                            task = _public_task_update(event.get("task"))
+                            if task is not None:
+                                yield _json_for_sse("task", {"task": task})
                         elif event.get("type") == "token":
                             yield _json_for_sse("token", {"text": event.get("text", "")})
                         elif event.get("type") == "final":
@@ -806,37 +847,31 @@ async def stream_chat_message(
     )
 
 
-# In the hosted layout the Vite build is served by the same API origin. This
-# keeps the HttpOnly session cookie first-party and avoids exposing Gateway
-# bearer tokens to browser storage or client-side JavaScript.
-_FRONTEND_DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
-if (_FRONTEND_DIST / "assets").is_dir():
-    app.mount(
-        "/assets",
-        StaticFiles(directory=str(_FRONTEND_DIST / "assets")),
-        name="frontend-assets",
-    )
-
-
 @app.get("/", include_in_schema=False)
-def frontend_root():
-    index = _FRONTEND_DIST / "index.html"
-    if index.is_file():
-        return FileResponse(index)
-    return JSONResponse(
-        status_code=503,
-        content={"detail": "EvidenceFlow frontend has not been built."},
-    )
-
-
-@app.get("/{asset_path:path}", include_in_schema=False)
-def frontend_fallback(asset_path: str):
-    if asset_path.startswith("api/") or asset_path in {"health", "ready", "docs", "openapi.json"}:
-        raise HTTPException(404, "Not found.")
-    candidate = (_FRONTEND_DIST / asset_path).resolve()
-    if candidate.is_file() and _FRONTEND_DIST.resolve() in candidate.parents:
-        return FileResponse(candidate)
-    index = _FRONTEND_DIST / "index.html"
-    if index.is_file():
-        return FileResponse(index)
-    raise HTTPException(404, "Not found.")
+def api_root():
+    """Return service metadata; EvidenceFlow is an API-only deployment."""
+    return {
+        "service": "evidenceflow-api",
+        "status": "ok",
+        "version": app.version,
+        "api_base_path": "/api/v1",
+        "openapi_url": "/openapi.json",
+        "docs_url": "/docs",
+        "health_url": "/health",
+        "readiness_url": "/ready",
+        "capabilities": [
+            "owner-scoped document ingestion",
+            "sparse-first retrieval and reranking",
+            "evidence-backed research with citation verification",
+            "server-sent event responses",
+            "client-safe live task lifecycle events",
+        ],
+        "document_types": [
+            "pdf", "doc", "docx", "xls", "xlsx", "xlsm", "xlsb",
+            "ods", "ppt", "pptx", "odp", "odt", "rtf", "txt", "md", "csv",
+            "tsv", "json", "xml", "yaml", "toml", "ini", "log",
+            "html", "htm", "eml", "sql", "py", "js", "ts", "css",
+            "sh", "conf", "png", "jpg", "jpeg", "webp", "bmp",
+            "tif", "tiff",
+        ],
+    }

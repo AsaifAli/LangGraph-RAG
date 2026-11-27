@@ -1,5 +1,5 @@
 """Lean custom-LangGraph agent — no deepagents. Now the production path
-`streamlit_app.py` runs (replacing `unified_poc.py`'s deepagents-based
+`EvidenceFlow API service` runs (replacing `unified_poc.py`'s deepagents-based
 agent, deleted — see README "Comparison: deepagents/LangGraph vs. current
 Agno orchestration" for the full reasoning trail).
 
@@ -114,6 +114,7 @@ from langchain_core.tools import tool
 
 from langgraph.types import RetryPolicy
 
+from shared.document_file_mentions import contains_document_filename
 from shared.quality import citation_quality, evidence_conflict_candidates, numeric_support, should_abstain_from_kb
 from shared.guardrails import build_trust_status, detect_secret_leakage, scan_untrusted_content, validate_query, validate_tool_query
 from tools.primary_source_mcp import KatzillaMCPClient, get_primary_source_mcp
@@ -475,15 +476,10 @@ def search_web(query: str) -> str:
     raise NotImplementedError("search_web is a schema-only tool — route reads tool_calls, never invokes it")
 
 
-# Broader than this app's actually-ingestible types (txt/md/csv/pdf/docx/
-# doc — see app/streamlit_app.py's file_uploader) on purpose: this is a
-# "does the query LOOK LIKE it's naming a file" detector, not a
-# type-validity check — a user can just as easily type "summarize
-# sales.xlsx" for a file that was never uploaded at all, and that should
-# still resolve to "not found" rather than falling back to "all", same as
-# any other unmatched filename-shaped reference.
-_FILENAME_LIKE_RE = re.compile(r"\b[\w\-]+\.(?:txt|pdf|docx?|csv|md|xlsx?)\b", re.IGNORECASE)
-
+# This is a filename-shape detector, not a type validator. It deliberately
+# covers common document and office formats accepted by the API so a
+# request for a missing workbook, presentation or document never falls back
+# to unrelated documents in the same knowledge scope.
 
 def _resolve_full_fetch_targets(query: str, document_ids: list[str], document_names: dict[str, str]) -> list[str]:
     """For MODE=SUMMARY or MODE=COMPARE: which document_id(s) to fetch in
@@ -524,7 +520,7 @@ def _resolve_full_fetch_targets(query: str, document_ids: list[str], document_na
     ]
     if matched:
         return matched
-    if _FILENAME_LIKE_RE.search(query):
+    if contains_document_filename(query):
         return []
     return document_ids
 
@@ -605,11 +601,11 @@ def _build_graph(*, model, web_search_tool, primary_source_mcp):
         document_ids = state.get("document_ids") or []
         document_names = state.get("document_names") or {}
         # `document_ids` is [demo fixture, ...uploaded, in upload order] (see
-        # streamlit_app.py's `_document_ids_in_scope`) — the LAST entry is
+        # the API's `_document_ids_in_scope`) — the LAST entry is
         # reliably the most recently uploaded document whenever there's more
         # than one. Marked explicitly here because the model otherwise has NO
         # way to know a document was just uploaded: the upload confirmation
-        # message lives only in the Streamlit UI's own message list, never in
+        # message lives only in the API response message history, never in
         # this graph's actual conversation history — seen LIVE as a real bug:
         # "summarize this document" right after uploading a second document
         # picked the FIRST-listed (demo) document instead, because nothing
@@ -1259,6 +1255,7 @@ async def astream_langgraph_turn(
     }
 
     STATUS_LABELS = {
+        "route": "🧭 Planning the research",
         "retrieve_kb": "🔍 Searching the knowledge base",
         "analyze_chunk": "📖 Analyzing a retrieved chunk",
         "summarize_document": "📑 Rolling up findings per document",
@@ -1269,12 +1266,24 @@ async def astream_langgraph_turn(
         "synthesize": "✍️ Synthesizing the answer",
     }
 
+    TASK_DETAILS = {
+        "route": ("Plan research", "Classify the request and choose relevant research branches."),
+        "retrieve_kb": ("Search knowledge base", "Retrieve relevant passages from the client's indexed documents."),
+        "analyze_chunk": ("Analyze evidence", "Inspect retrieved passages and extract relevant supporting facts."),
+        "summarize_document": ("Summarize documents", "Consolidate evidence across related document sections."),
+        "research_web": ("Search public sources", "Gather relevant external information when the request needs it."),
+        "research_primary_source": ("Check primary sources", "Consult approved primary-source data connectors."),
+        "synthesize": ("Synthesize answer", "Combine the selected evidence into a grounded response."),
+    }
+
     STREAM_NODES = {
         "synthesize",
         "route",
     }
 
     seen_status: set[str] = set()
+    task_counts: dict[str, int] = {}
+    active_tasks: dict[str, dict[str, str]] = {}
 
     root_run_id: str | None = None
 
@@ -1317,19 +1326,45 @@ async def astream_langgraph_turn(
             if isinstance(output, dict):
                 final_state = output
 
-        # Emit each status once.
+        # Emit each high-level status once for lightweight progress consumers.
         if (
             kind == "on_chain_start"
             and name in STATUS_LABELS
             and name not in seen_status
         ):
-
             seen_status.add(name)
-
             yield {
                 "type": "status",
                 "text": f"{STATUS_LABELS[name]}...",
             }
+
+        # Emit bounded task lifecycle events. These contain only static,
+        # client-safe task labels—not prompts, intermediate model thoughts,
+        # provider responses, or source text.
+        if kind == "on_chain_start" and name in TASK_DETAILS:
+            task_counts[name] = task_counts.get(name, 0) + 1
+            task_id = f"{name}-{task_counts[name]}"
+            label, description = TASK_DETAILS[name]
+            task = {
+                "id": task_id,
+                "name": name,
+                "label": label,
+                "description": description,
+                "status": "running",
+            }
+            active_tasks[str(event.get("run_id") or task_id)] = task
+            yield {"type": "task", "task": task}
+
+        elif kind in {"on_chain_end", "on_chain_error"}:
+            active_task = active_tasks.pop(str(event.get("run_id") or ""), None)
+            if active_task is not None:
+                yield {
+                    "type": "task",
+                    "task": {
+                        **active_task,
+                        "status": "completed" if kind == "on_chain_end" else "failed",
+                    },
+                }
 
         # Only stream route/synthesis output.
         elif (
@@ -1386,7 +1421,7 @@ async def run_custom_langgraph(
     turn with no persisted memory — the standalone comparison-script shape
     (matches research_poc.py/data_analysis_poc.py), not the multi-turn chat UI's
     build-once/invoke-many usage (`build_langgraph_agent` + `run_langgraph_turn`/
-    `astream_langgraph_turn` above, which is what `streamlit_app.py` uses)."""
+    `astream_langgraph_turn` above, which is what `EvidenceFlow API service` uses)."""
     fixed_ids = document_ids or []
     built = build_langgraph_agent(
         tenant_schema=tenant_schema,
