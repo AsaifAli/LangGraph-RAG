@@ -48,7 +48,7 @@ pytest-cov==6.0.0
 setuptools>=75
 
 # Optional primary-source MCP client
-mcp>=2,<3
+mcp>=2.3.0,<3
 PyMuPDF>=1.24,<2
 Pillow>=13.0.0,<14
 upstash-redis>=1.4,<2
