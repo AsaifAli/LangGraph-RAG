@@ -48,7 +48,7 @@ services:
     build: .
     container_name: evidenceflow-app
     ports:
-      - "18501:8501"
+      - "18000:8000"
     env_file:
       - path: .env
         required: false

@@ -1,7 +1,7 @@
 """Ingest a local document into the POC's demo OpenSearch index, so
 custom_langgraph_poc.py can retrieve from it.
 
-CLI counterpart to streamlit_app.py's upload widgets — both call the same
+CLI counterpart to the API document-upload route — both call the same
 `rag_pipeline.ingest_document`, so behavior is identical either way.
 Text extraction (PDF/DOCX/DOC) is handled by `shared/text_extractors.py`;
 chunking is a simple recursive-splitter chunker — see `chunk_text`'s

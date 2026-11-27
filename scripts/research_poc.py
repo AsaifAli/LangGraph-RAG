@@ -140,7 +140,7 @@ async def run_research(query: str, *, backend: str = DEFAULT_BACKEND,
                         max_researcher_iterations: int = DEFAULT_MAX_RESEARCHER_ITERATIONS) -> list[dict]:
     """Run the deep-research pattern against one or all backends and return
     structured results — the shared core both `main()` (CLI) and
-    streamlit_app.py call."""
+    API call."""
     args = argparse.Namespace(
         query=query,
         max_concurrent_research_units=max_concurrent_research_units,

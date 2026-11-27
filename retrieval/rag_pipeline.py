@@ -18,7 +18,7 @@ search or vector database:
    the actual retrieval.
 
 The public functions keep the API expected by the existing LangGraph graph,
-Streamlit app and CLI scripts so the application can be re-engineered without
+API service and CLI scripts so the application can be re-engineered without
 rewriting unrelated layers.
 """
 
@@ -58,7 +58,7 @@ from shared.constants import AIConstants
 
 TENANT_SCHEMA = _get_env("TENANT_SCHEMA", "poc_demo")
 PLATFORM_TENANT_ID = _get_env("PLATFORM_TENANT_ID", "langgraph_rag")
-# CLI/offline workflows stay on a local-only scope; hosted Streamlit always
+# CLI/offline workflows stay on a local-only scope; hosted API always
 # supplies the opaque owner scope obtained from the Gateway's verified session.
 LOCAL_OWNER_SCOPE = "local-development"
 _OWNER_SCOPE_PATTERN = re.compile(r"^[a-f0-9]{64}$")
@@ -522,18 +522,47 @@ def chunk_csv_text(
     return chunks
 
 
-def extract_text(content: bytes, source_name: str) -> str:
-    from shared.text_extractors import DocumentTextExtractor
+def chunk_spreadsheet_text(
+    text: str,
+    *,
+    chunk_size: int = DEFAULT_CHUNK_SIZE,
+    overlap_rows: int = DEFAULT_CSV_OVERLAP_ROWS,
+) -> list[str]:
+    """Chunk worksheet blocks while repeating each worksheet's actual table header."""
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not lines:
+        return []
+    blocks: list[list[str]] = []
+    current: list[str] = []
+    for line in lines:
+        if line.startswith("Worksheet: ") and current:
+            blocks.append(current)
+            current = [line]
+        else:
+            current.append(line)
+    if current:
+        blocks.append(current)
 
-    extractor = DocumentTextExtractor()
-    suffix = Path(source_name).suffix.lower().lstrip(".")
-    if suffix == "pdf":
-        return extractor.pdf_bytes_to_text(content)
-    if suffix == "docx":
-        return extractor.docx_bytes_to_text(content)
-    if suffix == "doc":
-        return extractor.doc_bytes_to_text(content)
-    return extractor.txt_bytes_to_text(content)
+    chunks: list[str] = []
+    for block in blocks:
+        if len(block) <= 1:
+            continue
+        worksheet_label, *table_lines = block
+        if not table_lines:
+            continue
+        table_chunks = chunk_csv_text(
+            "\n".join(table_lines),
+            chunk_size=max(128, chunk_size - len(worksheet_label) - 1),
+            overlap_rows=overlap_rows,
+        )
+        chunks.extend(f"{worksheet_label}\n{table_chunk}" for table_chunk in table_chunks)
+    return chunks
+
+
+def extract_text(content: bytes, source_name: str) -> str:
+    from shared.document_extraction import extract_document_text
+
+    return extract_document_text(content, source_name)
 
 
 async def ingest_document(
@@ -603,10 +632,10 @@ async def ingest_document(
 
     for section in extraction.sections:
 
-        if suffix == ".csv":
-            section_chunks = chunk_csv_text(
-                section.text
-            )
+        if suffix in {".xls", ".xlsx", ".xlsm", ".xlsb", ".ods"}:
+            section_chunks = chunk_spreadsheet_text(section.text)
+        elif suffix in {".csv", ".tsv"}:
+            section_chunks = chunk_csv_text(section.text)
         else:
             section_chunks = chunk_text(
                 section.text

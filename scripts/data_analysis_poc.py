@@ -117,7 +117,7 @@ async def run_kb_retrieval_baseline() -> str:
 
 async def run_data_analysis(*, backend: str = DEFAULT_BACKEND) -> dict[str, Any]:
     """Run both halves of the comparison and return structured results — the
-    shared core both `main()` (CLI) and streamlit_app.py call."""
+    shared core both `main()` (CLI) and API call."""
     outcome: dict[str, Any] = {"question": _QUESTION}
 
     try:

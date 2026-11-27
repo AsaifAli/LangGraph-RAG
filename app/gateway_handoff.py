@@ -321,9 +321,9 @@ def exchange_handoff_code(
     identity_headers: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """
-    Exchange a one-time portfolio handoff code from the Streamlit server.
+    Exchange a one-time portfolio handoff code from the EvidenceFlow API.
 
-    The returned bearer token remains in Streamlit server-side session
+    The returned bearer token remains in the encrypted API session store
     state. It is never appended to a URL or returned to browser JavaScript.
     """
     code = str(code or "").strip()
