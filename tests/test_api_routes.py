@@ -197,7 +197,7 @@ def test_evidence_markers_are_rendered_as_source_anchors():
         "See the control [EVID: E02] for context."
     ) == "See the control [E02](#evidence-E02) for context."
 
-def test_api_readiness_uses_ready_endpoint_and_removes_streamlit_health_route(monkeypatch):
+def test_api_readiness_keeps_render_legacy_probe_compatible_without_restoring_streamlit(monkeypatch):
     class ReadyStore:
         def check_ready(self):
             return None
@@ -207,15 +207,17 @@ def test_api_readiness_uses_ready_endpoint_and_removes_streamlit_health_route(mo
 
     client = TestClient(api_main.app)
     response = client.get("/ready")
-    legacy_ui_health = client.get("/_stcore/health")
+    legacy_health_probe = client.get("/_stcore/health")
 
-    assert response.status_code == 200
-    assert response.json() == {
+    expected = {
         "status": "ready",
         "workspace_store": "ok",
         "checkpointer": "ok",
     }
-    assert legacy_ui_health.status_code == 404
+    assert response.status_code == 200
+    assert response.json() == expected
+    assert legacy_health_probe.status_code == 200
+    assert legacy_health_probe.json() == expected
 
 
 def test_research_sse_stream_forwards_only_safe_task_lifecycle_events(monkeypatch):
