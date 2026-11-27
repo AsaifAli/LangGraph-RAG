@@ -1,18 +1,18 @@
 # EvidenceFlow dependencies: LangGraph + OpenSearch sparse-first retrieval
 # and a local cross-encoder reranker. No dense vector database is required.
 
-langgraph==1.2.9
-langgraph-checkpoint-sqlite==3.1.1
+langgraph==1.2.24
+langgraph-checkpoint-sqlite==3.1.3
 
 # Chat model backends
-langchain-google-genai==4.3.2
-langchain-openai==1.1.14
-langchain-huggingface==1.2.2
+langchain-google-genai==4.5.2
+langchain-openai==1.8.5
+langchain-huggingface==1.3.0
 huggingface_hub==1.26.1
 
 # Retrieval / indexing
 opensearch-py==2.8.0
-langchain-text-splitters==1.1.2
+langchain-text-splitters==1.2.0
 
 # Local reranking only; this is not used for vector retrieval.
 fastembed==0.9.1  # Adds Pillow 13 compatibility; 0.8.0 constrained Pillow below 13.
@@ -23,13 +23,13 @@ uvicorn[standard]>=0.30,<1
 python-multipart>=0.0.9,<1
 cryptography>=50.0.2,<51
 aiosqlite>=0.20,<1
-tavily-python==0.7.27
+tavily-python==0.8.5
 google-genai==2.17.0
-pydantic==2.13.4
-python-dotenv==1.2.2
+pydantic==2.14.4
+python-dotenv==1.2.4
 
 # Document extraction: PDF, Word, Excel, PowerPoint and OpenDocument.
-pdfplumber==0.11.9
+pdfplumber==0.11.11
 python-docx==1.2.0
 openpyxl==3.1.5
 xlrd>=2.0.1,<3
@@ -39,10 +39,10 @@ python-pptx>=1.0.2,<2
 striprtf>=0.0.29,<1
 
 # Data analysis utilities
-pandas==3.0.5
+pandas==3.1.1
 
 # Tests / tooling
-pytest==9.0.3
+pytest==9.2.0
 pytest-asyncio==1.5.0
 pytest-cov==6.0.0
 setuptools>=75
