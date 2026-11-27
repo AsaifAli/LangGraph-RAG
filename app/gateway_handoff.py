@@ -5,9 +5,8 @@ import json
 import os
 import re
 import socket
-
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit, urlunsplit
 from urllib.request import (
@@ -19,6 +18,17 @@ from urllib.request import (
 
 PROJECT_SLUG = "evidenceflow"
 EXCHANGE_TIMEOUT_SECONDS = 8
+WORKSPACE_IDENTITY_HEADERS = (
+    "X-Studio-Workspace-Client-Id",
+    "X-Studio-Workspace-Timestamp",
+    "X-Studio-Workspace-Signature",
+)
+WORKSPACE_CLIENT_ID_PATTERN = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+    re.IGNORECASE,
+)
+WORKSPACE_TIMESTAMP_PATTERN = re.compile(r"^[0-9]{10}$")
+WORKSPACE_SIGNATURE_PATTERN = re.compile(r"^[a-f0-9]{64}$", re.IGNORECASE)
 MAX_RESPONSE_BYTES = 64 * 1024
 
 CODE_PATTERN = re.compile(r"^[A-Za-z0-9_-]{32,128}$")
@@ -151,7 +161,9 @@ def _validate_gateway_destination(base_url: str) -> None:
         )
 
 
-def _exchange_endpoint(base_url: str) -> str:
+def _session_endpoint(base_url: str, action: str) -> str:
+    if action not in {"exchange", "revoke"}:
+        raise GatewayHandoffError("The portfolio session gateway action is invalid.")
     try:
         parsed = urlsplit(base_url.strip())
         hostname = parsed.hostname
@@ -175,22 +187,130 @@ def _exchange_endpoint(base_url: str) -> str:
         )
 
     path = parsed.path.rstrip("/")
-
     # Accept either a gateway root or an OpenAI-compatible /v1 base URL.
     if path.endswith("/v1"):
         path = path[:-3].rstrip("/")
+    endpoint_path = f"{path}/v1/demo/session/{action}"
+    return urlunsplit((parsed.scheme, parsed.netloc, endpoint_path, "", ""))
 
-    endpoint_path = f"{path}/v1/demo/session/exchange"
 
-    return urlunsplit(
-        (
-            parsed.scheme,
-            parsed.netloc,
-            endpoint_path,
-            "",
-            "",
-        )
+def _exchange_endpoint(base_url: str) -> str:
+    return _session_endpoint(base_url, "exchange")
+
+
+def _validated_workspace_identity_headers(
+    identity_headers: Mapping[str, str] | None,
+) -> dict[str, str]:
+    if identity_headers is None:
+        return {}
+
+    # Header names are intentionally allowlisted; do not forward caller-
+    # supplied headers or arbitrary identity metadata to the Gateway.
+    allowed_by_lower = {header.lower(): header for header in WORKSPACE_IDENTITY_HEADERS}
+    supplied = {
+        allowed_by_lower[name.lower()]: str(value or "").strip()
+        for name, value in identity_headers.items()
+        if name.lower() in allowed_by_lower
+    }
+    if not supplied:
+        return {}
+    if len(supplied) != len(WORKSPACE_IDENTITY_HEADERS) or any(
+        not supplied.get(name) for name in WORKSPACE_IDENTITY_HEADERS
+    ):
+        raise GatewayHandoffError("The workspace identity assertion is incomplete.")
+
+    client_id = supplied[WORKSPACE_IDENTITY_HEADERS[0]]
+    timestamp = supplied[WORKSPACE_IDENTITY_HEADERS[1]]
+    signature = supplied[WORKSPACE_IDENTITY_HEADERS[2]]
+    if (
+        not WORKSPACE_CLIENT_ID_PATTERN.fullmatch(client_id)
+        or not WORKSPACE_TIMESTAMP_PATTERN.fullmatch(timestamp)
+        or int(timestamp) <= 0
+        or not WORKSPACE_SIGNATURE_PATTERN.fullmatch(signature)
+    ):
+        raise GatewayHandoffError("The workspace identity assertion is invalid.")
+
+    return {
+        WORKSPACE_IDENTITY_HEADERS[0]: client_id.lower(),
+        WORKSPACE_IDENTITY_HEADERS[1]: timestamp,
+        WORKSPACE_IDENTITY_HEADERS[2]: signature.lower(),
+    }
+
+
+def revoke_gateway_session(
+    access_token: str,
+    *,
+    gateway_url: str | None = None,
+) -> bool:
+    """Revoke the delegated EvidenceFlow child session at the Gateway.
+
+    A 401 means the bearer is already inactive (expired or previously revoked),
+    so it is safe to complete local cleanup. Other non-confirming responses
+    remain retryable and must not cause the local cookie/session to be deleted.
+    """
+    token = str(access_token or "").strip()
+    if (
+        not token
+        or len(token) > 8192
+        or "\n" in token
+        or "\r" in token
+        or not re.fullmatch(r"[A-Za-z0-9._~-]{16,8192}", token)
+    ):
+        raise GatewayHandoffError("The stored Gateway session token is invalid.")
+
+    base_url = (
+        gateway_url.strip()
+        if gateway_url
+        else _configured_gateway_url()
     )
+    if not base_url:
+        raise GatewayHandoffError(
+            "Portfolio session revocation is not configured on this app."
+        )
+
+    _validate_gateway_destination(base_url)
+    endpoint = _session_endpoint(base_url, "revoke")
+    request = Request(
+        endpoint,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json",
+            "Cache-Control": "no-store",
+            "Pragma": "no-cache",
+        },
+        method="POST",
+    )
+    opener = build_opener(_NoRedirectHandler())
+
+    try:
+        with opener.open(request, timeout=EXCHANGE_TIMEOUT_SECONDS) as response:
+            raw = response.read(MAX_RESPONSE_BYTES + 1)
+    except HTTPError as exc:
+        if exc.code == 401:
+            return True
+        raise GatewayHandoffError(
+            "The Gateway could not confirm the EvidenceFlow session revocation."
+        ) from None
+    except (URLError, TimeoutError, OSError):
+        raise GatewayHandoffError(
+            "The Gateway could not be reached to revoke the EvidenceFlow session."
+        ) from None
+
+    if len(raw) > MAX_RESPONSE_BYTES:
+        raise GatewayHandoffError(
+            "The Gateway returned an invalid revocation response."
+        )
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        raise GatewayHandoffError(
+            "The Gateway returned an invalid revocation response."
+        ) from None
+    if not isinstance(payload, dict) or payload.get("revoked") is not True:
+        raise GatewayHandoffError(
+            "The Gateway could not confirm the EvidenceFlow session revocation."
+        )
+    return True
 
 
 def exchange_handoff_code(
@@ -198,6 +318,7 @@ def exchange_handoff_code(
     *,
     project: str = PROJECT_SLUG,
     gateway_url: str | None = None,
+    identity_headers: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """
     Exchange a one-time portfolio handoff code from the Streamlit server.
@@ -232,6 +353,7 @@ def exchange_handoff_code(
 
     _validate_gateway_destination(base_url)
     endpoint = _exchange_endpoint(base_url)
+    trusted_identity_headers = _validated_workspace_identity_headers(identity_headers)
 
     body = json.dumps(
         {
@@ -248,6 +370,7 @@ def exchange_handoff_code(
             "Accept": "application/json",
             "Cache-Control": "no-store",
             "Pragma": "no-cache",
+            **trusted_identity_headers,
         },
         method="POST",
     )
