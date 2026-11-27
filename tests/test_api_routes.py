@@ -197,7 +197,7 @@ def test_evidence_markers_are_rendered_as_source_anchors():
         "See the control [EVID: E02] for context."
     ) == "See the control [E02](#evidence-E02) for context."
 
-def test_legacy_render_health_path_checks_actual_readiness(monkeypatch):
+def test_api_readiness_uses_ready_endpoint_and_removes_streamlit_health_route(monkeypatch):
     class ReadyStore:
         def check_ready(self):
             return None
@@ -205,7 +205,9 @@ def test_legacy_render_health_path_checks_actual_readiness(monkeypatch):
     monkeypatch.setattr(api_main, "store", ReadyStore())
     monkeypatch.setattr(api_main, "checkpointer", object())
 
-    response = TestClient(api_main.app).get("/_stcore/health")
+    client = TestClient(api_main.app)
+    response = client.get("/ready")
+    legacy_ui_health = client.get("/_stcore/health")
 
     assert response.status_code == 200
     assert response.json() == {
@@ -213,6 +215,84 @@ def test_legacy_render_health_path_checks_actual_readiness(monkeypatch):
         "workspace_store": "ok",
         "checkpointer": "ok",
     }
+    assert legacy_ui_health.status_code == 404
+
+
+def test_research_sse_stream_forwards_only_safe_task_lifecycle_events(monkeypatch):
+    test_store = _test_store()
+    monkeypatch.setattr(api_main, "store", test_store)
+    monkeypatch.setattr(api_main.owner_rate_limiter, "enforce", lambda *args, **kwargs: None)
+    session_id = test_store.create_session(
+        access_token="gateway-child-token-for-task-stream",
+        owner_scope="d" * 64,
+        provider="openai",
+        model="gpt-4o-mini",
+        expires_in=600,
+    )
+
+    async def fake_build_agent(**kwargs):
+        return {"agent": "test-agent"}
+
+    async def fake_stream(agent, message, *, thread_id):
+        yield {
+            "type": "task",
+            "task": {
+                "id": "retrieve_kb-1",
+                "name": "retrieve_kb",
+                "status": "running",
+                "prompt": "PRIVATE PROMPT MUST NOT LEAK",
+                "internal_reasoning": "PRIVATE CHAIN OF THOUGHT MUST NOT LEAK",
+            },
+        }
+        yield {
+            "type": "task",
+            "task": {
+                "id": "retrieve_kb-1",
+                "name": "retrieve_kb",
+                "status": "completed",
+            },
+        }
+        yield {
+            "type": "final",
+            "final_answer": "The policy supports this conclusion.",
+            "chunks": [],
+            "web_sources": [],
+            "delegations": [],
+            "used_knowledge_base": True,
+            "used_web": False,
+            "used_primary_source": False,
+            "abstained": False,
+            "grounding_status": "VERIFIED",
+            "quality": {},
+            "trust": {"label": "VERIFIED"},
+        }
+
+    monkeypatch.setattr(api_main, "_get_or_build_agent", fake_build_agent)
+    monkeypatch.setattr(api_main, "astream_langgraph_turn", fake_stream)
+
+    client = TestClient(api_main.app)
+    created = client.post(
+        "/api/v1/chats",
+        cookies={api_main.COOKIE_NAME: session_id},
+    )
+    assert created.status_code == 201
+    thread_id = created.json()["thread_id"]
+
+    response = client.post(
+        f"/api/v1/chats/{thread_id}/messages",
+        json={"message": "Summarize the indexed policy."},
+        cookies={api_main.COOKIE_NAME: session_id},
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    assert response.text.count("event: task") == 2
+    assert '"label":"Search knowledge base"' in response.text
+    assert '"status":"running"' in response.text
+    assert '"status":"completed"' in response.text
+    assert "PRIVATE PROMPT MUST NOT LEAK" not in response.text
+    assert "PRIVATE CHAIN OF THOUGHT MUST NOT LEAK" not in response.text
+    assert '"internal_reasoning"' not in response.text
 
 
 def test_evidenceflow_exchange_forwards_studio_workspace_identity(monkeypatch):
