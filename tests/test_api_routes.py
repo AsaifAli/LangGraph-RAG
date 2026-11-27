@@ -1,6 +1,6 @@
 from fastapi.testclient import TestClient
 
-from app import api_main
+from app import api_main, gateway_handoff
 from app.api_store import EvidenceFlowStore
 
 
@@ -213,3 +213,108 @@ def test_legacy_render_health_path_checks_actual_readiness(monkeypatch):
         "workspace_store": "ok",
         "checkpointer": "ok",
     }
+
+
+def test_evidenceflow_exchange_forwards_studio_workspace_identity(monkeypatch):
+    test_store = _test_store()
+    monkeypatch.setattr(api_main, "store", test_store)
+    captured = {}
+
+    def fake_exchange(code, *, project, identity_headers=None):
+        captured.update({
+            "code": code,
+            "project": project,
+            "identity_headers": identity_headers,
+        })
+        return {
+            "access_token": "gateway-child-token",
+            "owner_scope": "a" * 64,
+            "provider": "openai",
+            "model": "gpt-4o-mini",
+            "expires_in": 600,
+        }
+
+    monkeypatch.setattr(api_main, "exchange_handoff_code", fake_exchange)
+    response = TestClient(api_main.app).post(
+        "/api/v1/session/exchange",
+        json={"code": "a" * 43},
+        headers={
+            "X-Studio-Workspace-Client-Id": "11111111-1111-4111-8111-111111111111",
+            "X-Studio-Workspace-Timestamp": "1800000000",
+            "X-Studio-Workspace-Signature": "b" * 64,
+        },
+    )
+
+    assert response.status_code == 200
+    assert captured == {
+        "code": "a" * 43,
+        "project": "evidenceflow",
+        "identity_headers": {
+            "X-Studio-Workspace-Client-Id": "11111111-1111-4111-8111-111111111111",
+            "X-Studio-Workspace-Timestamp": "1800000000",
+            "X-Studio-Workspace-Signature": "b" * 64,
+        },
+    }
+
+
+def test_evidenceflow_exchange_rejects_incomplete_workspace_identity(monkeypatch):
+    test_store = _test_store()
+    monkeypatch.setattr(api_main, "store", test_store)
+    monkeypatch.setenv(
+        "PORTFOLIO_SESSION_GATEWAY_URL",
+        "https://portfolio-llm-gateway.onrender.com",
+    )
+
+    def unexpected_opener(*args, **kwargs):
+        raise AssertionError("Gateway network must not be reached for an incomplete assertion")
+
+    monkeypatch.setattr(gateway_handoff, "build_opener", unexpected_opener)
+    response = TestClient(api_main.app).post(
+        "/api/v1/session/exchange",
+        json={"code": "a" * 43},
+        headers={"X-Studio-Workspace-Client-Id": "11111111-1111-4111-8111-111111111111"},
+    )
+    assert response.status_code == 401
+    assert "identity assertion" in response.json()["detail"].lower()
+
+
+def test_evidenceflow_revoke_preserves_local_session_on_gateway_failure_then_retries(monkeypatch):
+    test_store = _test_store()
+    monkeypatch.setattr(api_main, "store", test_store)
+    session_id = test_store.create_session(
+        access_token="gateway-child-token",
+        owner_scope="a" * 64,
+        provider="openai",
+        model="gpt-4o-mini",
+        expires_in=600,
+    )
+    calls = []
+
+    def fail_revoke(token):
+        calls.append(token)
+        raise api_main.GatewayHandoffError("Gateway revocation could not be confirmed.")
+
+    monkeypatch.setattr(api_main, "revoke_gateway_session", fail_revoke)
+    client = TestClient(api_main.app)
+    failed = client.post(
+        "/api/v1/session/revoke",
+        cookies={api_main.COOKIE_NAME: session_id},
+    )
+    assert failed.status_code == 503
+    assert "set-cookie" not in failed.headers
+    assert test_store.get_session(session_id)["access_token"] == "gateway-child-token"
+
+    def confirm_revoke(token):
+        calls.append(token)
+        return True
+
+    monkeypatch.setattr(api_main, "revoke_gateway_session", confirm_revoke)
+    succeeded = client.post(
+        "/api/v1/session/revoke",
+        cookies={api_main.COOKIE_NAME: session_id},
+    )
+    assert succeeded.status_code == 200
+    assert succeeded.json() == {"revoked": True}
+    assert "max-age=0" in succeeded.headers.get("set-cookie", "").lower()
+    assert test_store.get_session(session_id) is None
+    assert calls == ["gateway-child-token", "gateway-child-token"]
