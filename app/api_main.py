@@ -364,6 +364,16 @@ def ready():
     return {"status": "ready", "workspace_store": "ok", "checkpointer": "ok"}
 
 
+@app.get("/_stcore/health")
+def legacy_render_health():
+    """Compatibility alias for the existing Render health-check setting.
+
+    This endpoint only reports API readiness. It does not mount or expose
+    the retired Streamlit interface.
+    """
+    return ready()
+
+
 @app.post("/api/v1/session/exchange")
 async def exchange_session(payload: SessionExchangeRequest, request: Request):
     identity_header_names = (
