@@ -158,7 +158,7 @@ def test_gateway_exchange_sets_httponly_cookie_without_returning_bearer(monkeypa
     monkeypatch.setattr(
         api_main,
         "exchange_handoff_code",
-        lambda code, project: {
+        lambda code, project, identity_headers=None: {
             "access_token": "gateway-secret-for-browser-session",
             "expires_in": 900,
             "owner_scope": "e" * 64,
