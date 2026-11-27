@@ -288,3 +288,132 @@ def test_gateway_handoff_rejects_unapproved_public_host(monkeypatch):
             "a" * 43,
             gateway_url="https://attacker.example.com",
         )
+
+
+def test_exchange_forwards_only_valid_studio_workspace_identity_headers(monkeypatch):
+    expected_url = "https://portfolio-llm-gateway.onrender.com/v1/demo/session/exchange"
+    fake_opener = FakeOpener(
+        {
+            "access_token": "signed-session-token",
+            "expires_in": 900,
+            "target_project": "evidenceflow",
+            "owner_scope": "a" * 64,
+            "provider": "openai",
+            "model": "gpt-4o-mini",
+        },
+        expected_url,
+    )
+    monkeypatch.setattr(gateway_handoff, "build_opener", lambda *args: fake_opener)
+    identity = {
+        "X-Studio-Workspace-Client-Id": "11111111-1111-4111-8111-111111111111",
+        "X-Studio-Workspace-Timestamp": "1800000000",
+        "X-Studio-Workspace-Signature": "b" * 64,
+    }
+
+    exchange_handoff_code(
+        "a" * 43,
+        gateway_url="https://portfolio-llm-gateway.onrender.com",
+        identity_headers=identity,
+    )
+
+    assert fake_opener.request.get_header("X-studio-workspace-client-id") == identity["X-Studio-Workspace-Client-Id"]
+    assert fake_opener.request.get_header("X-studio-workspace-timestamp") == identity["X-Studio-Workspace-Timestamp"]
+    assert fake_opener.request.get_header("X-studio-workspace-signature") == identity["X-Studio-Workspace-Signature"]
+
+
+def test_exchange_rejects_partial_or_malformed_workspace_identity_before_network(monkeypatch):
+    called = False
+
+    def unexpected_opener(*args):
+        nonlocal called
+        called = True
+        raise AssertionError("Gateway must not be called with an invalid workspace assertion")
+
+    monkeypatch.setattr(gateway_handoff, "build_opener", unexpected_opener)
+    with pytest.raises(GatewayHandoffError, match="identity assertion"):
+        exchange_handoff_code(
+            "a" * 43,
+            gateway_url="https://portfolio-llm-gateway.onrender.com",
+            identity_headers={"X-Studio-Workspace-Client-Id": "11111111-1111-4111-8111-111111111111"},
+        )
+    with pytest.raises(GatewayHandoffError, match="identity assertion"):
+        exchange_handoff_code(
+            "a" * 43,
+            gateway_url="https://portfolio-llm-gateway.onrender.com",
+            identity_headers={
+                "X-Studio-Workspace-Client-Id": "not-a-uuid",
+                "X-Studio-Workspace-Timestamp": "1800000000",
+                "X-Studio-Workspace-Signature": "b" * 64,
+            },
+        )
+    assert called is False
+
+
+def test_revoke_gateway_session_uses_child_bearer_and_requires_confirmation(monkeypatch):
+    class RevokeOpener:
+        def __init__(self):
+            self.request = None
+            self.timeout = None
+
+        def open(self, request, timeout):
+            self.request = request
+            self.timeout = timeout
+            assert request.full_url == "https://portfolio-llm-gateway.onrender.com/v1/demo/session/revoke"
+            assert request.get_method() == "POST"
+            assert request.get_header("Authorization") == "Bearer child-gateway-token"
+            assert request.get_header("Cache-control") == "no-store"
+            return FakeResponse({"revoked": True})
+
+    opener = RevokeOpener()
+    monkeypatch.setattr(gateway_handoff, "build_opener", lambda *args: opener)
+
+    assert gateway_handoff.revoke_gateway_session(
+        "child-gateway-token",
+        gateway_url="https://portfolio-llm-gateway.onrender.com",
+    ) is True
+    assert opener.timeout == 8
+
+
+def test_revoke_gateway_session_treats_gateway_401_as_already_inactive(monkeypatch):
+    from urllib.error import HTTPError
+    from io import BytesIO
+
+    class RevokeOpener:
+        def open(self, request, timeout):
+            raise HTTPError(request.full_url, 401, "inactive", {}, BytesIO(b"{}"))
+
+    monkeypatch.setattr(gateway_handoff, "build_opener", lambda *args: RevokeOpener())
+    assert gateway_handoff.revoke_gateway_session(
+        "expired-child-token",
+        gateway_url="https://portfolio-llm-gateway.onrender.com",
+    ) is True
+
+
+def test_revoke_gateway_session_fails_closed_without_confirmation(monkeypatch):
+    class RevokeOpener:
+        def open(self, request, timeout):
+            return FakeResponse({"revoked": False})
+
+    monkeypatch.setattr(gateway_handoff, "build_opener", lambda *args: RevokeOpener())
+    with pytest.raises(GatewayHandoffError, match="confirm"):
+        gateway_handoff.revoke_gateway_session(
+            "child-gateway-token",
+            gateway_url="https://portfolio-llm-gateway.onrender.com",
+        )
+
+
+def test_exchange_rejects_timestamp_shape_gateway_will_not_accept(monkeypatch):
+    def unexpected_opener(*args):
+        raise AssertionError("Gateway must not be called with an invalid timestamp")
+
+    monkeypatch.setattr(gateway_handoff, "build_opener", unexpected_opener)
+    with pytest.raises(GatewayHandoffError, match="identity assertion"):
+        exchange_handoff_code(
+            "a" * 43,
+            gateway_url="https://portfolio-llm-gateway.onrender.com",
+            identity_headers={
+                "X-Studio-Workspace-Client-Id": "11111111-1111-4111-8111-111111111111",
+                "X-Studio-Workspace-Timestamp": "1800000000000",
+                "X-Studio-Workspace-Signature": "b" * 64,
+            },
+        )

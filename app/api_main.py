@@ -34,7 +34,11 @@ from pydantic import BaseModel, Field
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
 from agents.multi_agent_orchestrator import astream_langgraph_turn, build_langgraph_agent
-from app.gateway_handoff import GatewayHandoffError, exchange_handoff_code
+from app.gateway_handoff import (
+    GatewayHandoffError,
+    exchange_handoff_code,
+    revoke_gateway_session,
+)
 from app.api_store import EvidenceFlowStore, SessionStoreUnavailable
 from retrieval.rag_pipeline import (
     DEFAULT_BACKEND,
@@ -324,12 +328,23 @@ def ready():
 
 
 @app.post("/api/v1/session/exchange")
-async def exchange_session(payload: SessionExchangeRequest):
+async def exchange_session(payload: SessionExchangeRequest, request: Request):
+    identity_header_names = (
+        "X-Studio-Workspace-Client-Id",
+        "X-Studio-Workspace-Timestamp",
+        "X-Studio-Workspace-Signature",
+    )
+    identity_headers = {
+        name: request.headers.get(name, "").strip()
+        for name in identity_header_names
+    }
+    trusted_identity = identity_headers if any(identity_headers.values()) else None
     try:
         exchanged = await asyncio.to_thread(
             exchange_handoff_code,
             payload.code,
             project="evidenceflow",
+            identity_headers=trusted_identity,
         )
         session_id = store.create_session(
             access_token=exchanged["access_token"],
@@ -381,14 +396,21 @@ def revoke_session(request: Request):
     session_id = request.cookies.get(COOKIE_NAME, "")
     if session_id:
         try:
+            session = store.get_session(session_id)
+            if session is not None:
+                # The Gateway child session is the actual provider credential.
+                # Keep the encrypted local record and browser cookie until the
+                # Gateway confirms revocation so a transient failure is retryable.
+                revoke_gateway_session(session["access_token"])
             store.revoke_session(session_id)
-        except SessionStoreUnavailable as exc:
+        except (GatewayHandoffError, SessionStoreUnavailable) as exc:
             raise HTTPException(503, str(exc)) from None
         session_hash = hashlib.sha256(session_id.encode("utf-8")).hexdigest()
         for key in list(_AGENT_CACHE):
             if key.startswith(session_hash + ":"):
                 _AGENT_CACHE.pop(key, None)
-    result = JSONResponse({"revoked": True})
+
+    result = JSONResponse({"revoked": True}, headers={"Cache-Control": "no-store", "Pragma": "no-cache"})
     result.delete_cookie(COOKIE_NAME, path="/", httponly=True, secure=_is_production(), samesite="lax")
     return result
 
