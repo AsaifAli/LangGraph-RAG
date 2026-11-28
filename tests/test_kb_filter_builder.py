@@ -8,9 +8,9 @@ def test_filters_include_tenant_and_document_scope():
     assert {"terms": {"document_id": ["doc-1"]}} in filters
 
 
-def test_empty_document_scope_does_not_expand_scope():
+def test_empty_document_scope_fails_closed():
     filters = _build_filters([], "poc_demo", "langgraph_rag")
-    assert not any("document_id" in condition.get("terms", {}) for condition in filters)
+    assert {"match_none": {}} in filters
 
 
 
