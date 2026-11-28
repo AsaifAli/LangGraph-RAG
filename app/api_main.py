@@ -44,6 +44,7 @@ from retrieval.rag_pipeline import (
     DEFAULT_TURN_TIMEOUT_SECONDS,
     delete_document,
     ingest_document,
+    get_web_search_capability,
 )
 from shared.document_access import filter_documents_for_owner
 from shared.rate_limit import (
@@ -58,6 +59,7 @@ LOGGER = logging.getLogger("evidenceflow.api")
 COOKIE_NAME = "evidenceflow_session"
 CHAT_ID_PATTERN = re.compile(r"^[a-f0-9]{32}$")
 EVIDENCE_TAG_PATTERN = re.compile(r"\s*\[EVID:\s*(E\d+)\]", re.IGNORECASE)
+WEB_EVIDENCE_TAG_PATTERN = re.compile(r"\s*\[WEB:\s*(W\d+)\]", re.IGNORECASE)
 MAX_MESSAGES_PER_CHAT = 100
 MAX_CHATS_PER_OWNER = 100
 MAX_AGENT_CACHE = 64
@@ -137,12 +139,27 @@ def _public_task_update(event: Any) -> dict[str, Any] | None:
     }
 
 
-def _strip_evidence_tags(value: str) -> str:
-    """Convert trusted evidence markers into navigable links, not plain text."""
-    return EVIDENCE_TAG_PATTERN.sub(
+def _strip_evidence_tags(value: str, *, web_sources: list[dict] | None = None) -> str:
+    """Convert verified document/web markers into links to their own source cards."""
+    text = EVIDENCE_TAG_PATTERN.sub(
         lambda match: f" [{match.group(1).upper()}](#evidence-{match.group(1).upper()})",
         str(value or ""),
-    ).strip()
+    )
+    allowed_web_ids = {
+        str(source.get("evidence_id", "")).upper()
+        for source in (web_sources or [])
+        if isinstance(source, dict)
+        and re.fullmatch(r"W[1-9][0-9]{0,2}", str(source.get("evidence_id", "")).upper())
+    }
+    text = WEB_EVIDENCE_TAG_PATTERN.sub(
+        lambda match: (
+            f" [{match.group(1).upper()}](#web-source-{match.group(1).upper()})"
+            if match.group(1).upper() in allowed_web_ids
+            else ""
+        ),
+        text,
+    )
+    return text.strip()
 
 
 def _graph_expanded_chunk_count(chunks: list[Any] | None) -> int:
@@ -171,6 +188,9 @@ def _safe_outcome(outcome: dict[str, Any]) -> dict[str, Any]:
             "trust",
             "used_knowledge_base",
             "used_web",
+            "web_search_status",
+            "web_search_error_code",
+            "source_mode",
             "used_primary_source",
             "token_usage",
             "verified_count",
@@ -178,7 +198,11 @@ def _safe_outcome(outcome: dict[str, Any]) -> dict[str, Any]:
         )
         if key in outcome
     }
-    safe["final_answer"] = _strip_evidence_tags(outcome.get("final_answer", ""))
+    raw_web_sources = outcome.get("web_sources") if isinstance(outcome.get("web_sources"), list) else []
+    safe["final_answer"] = _strip_evidence_tags(
+        outcome.get("final_answer", ""),
+        web_sources=raw_web_sources,
+    )
 
     chunks = []
     for chunk in outcome.get("chunks") or []:
@@ -205,11 +229,14 @@ def _safe_outcome(outcome: dict[str, Any]) -> dict[str, Any]:
         )
         if not isinstance(source_data, dict):
             continue
-        web_sources.append({
+        safe_source = {
             key: str(source_data.get(key) or "")[:1200]
-            for key in ("title", "url", "snippet", "domain", "source_name")
+            for key in ("evidence_id", "title", "url", "snippet", "domain", "source_name")
             if source_data.get(key) is not None
-        })
+        }
+        if not safe_source.get("snippet") and isinstance(source_data.get("content"), str):
+            safe_source["snippet"] = source_data["content"][:1200]
+        web_sources.append(safe_source)
     safe["web_sources"] = web_sources[:8]
 
     delegations = []
@@ -426,7 +453,8 @@ async def exchange_session(payload: SessionExchangeRequest, request: Request):
             "project": "evidenceflow",
             "provider": exchanged.get("provider", ""),
             "model": exchanged.get("model", ""),
-            "expires_at": int(time.time()) + exchanged["expires_in"],
+                "expires_at": int(time.time()) + exchanged["expires_in"],
+            "capabilities": {"web_search": get_web_search_capability()},
         }
     )
     result.set_cookie(
@@ -450,6 +478,7 @@ def session_status(session=Depends(require_session)):
         "provider": details.get("provider", ""),
         "model": details.get("model", ""),
         "expires_at": details["expires_at"],
+        "capabilities": {"web_search": get_web_search_capability()},
     }
 
 

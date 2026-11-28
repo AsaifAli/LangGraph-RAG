@@ -15,11 +15,23 @@ from __future__ import annotations
 
 import asyncio
 import re
+from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlsplit
 
 _WEB_PREFIX = (
     "The following is from web search, not company documents.\n\n"
 )
+
+
+@dataclass(frozen=True)
+class WebSearchResult:
+    """Structured, safe-to-surface result for one web-search attempt."""
+
+    ok: bool
+    text: str = ""
+    sources: tuple[dict[str, Any], ...] = ()
+    error_code: str | None = None
 
 # Default Tavily search tuning. `topic` is only a fallback used when the dual
 # search below is bypassed; the primary search path runs BOTH topics explicitly
@@ -204,15 +216,20 @@ class WebSearchTool:
             if not isinstance(item, dict):
                 continue
             url = (item.get("url") or "").strip()
-            if not url or url in seen_urls:
+            try:
+                parsed = urlsplit(url)
+            except ValueError:
+                continue
+            if parsed.scheme not in {"https", "http"} or not parsed.netloc or url in seen_urls:
                 continue
             seen_urls.add(url)
             score = item.get("score")
             sources.append(
                 {
+                    "evidence_id": f"W{len(sources) + 1}",
                     "url": url,
-                    "title": (item.get("title") or "").strip(),
-                    "content": (item.get("content") or "").strip(),
+                    "title": (item.get("title") or "").strip()[:300],
+                    "content": (item.get("content") or "").strip()[:2400],
                     "score": float(score) if isinstance(score, (int, float)) else 0.0,
                 }
             )
@@ -243,28 +260,33 @@ class WebSearchTool:
             kwargs["time_range"] = self.time_range
         return self._client.search(**kwargs)
 
-    async def search(self, query: str) -> str:
-        """Search the web for the given query."""
-        if self._client is None:
-            return (
-                "Web search is not available: install `tavily-python`. "
-                "Example: pip install tavily-python"
+    @property
+    def available(self) -> bool:
+        """True only when configuration and the Tavily SDK client are present."""
+        return bool(self.api_key.strip() and self._client is not None)
+
+    async def search_structured(self, query: str) -> WebSearchResult:
+        """Run web search and distinguish real sourced results from failures."""
+        self._captured_sources = []
+        if not self.available:
+            return WebSearchResult(ok=False, error_code="sdk_unavailable")
+
+        try:
+            query = await _rehydrate_noop(
+                query,
+                pool=self.pool,
+                schema_name=self.schema_name,
+                thread_id=self.thread_id,
+                encrypted_token=self.encrypted_token,
+                is_temp=self.is_temp,
             )
-        query = await _rehydrate_noop(
-            query,
-            pool=self.pool,
-            schema_name=self.schema_name,
-            thread_id=self.thread_id,
-            encrypted_token=self.encrypted_token,
-            is_temp=self.is_temp,
-        )
+        except Exception:
+            return WebSearchResult(ok=False, error_code="query_preparation_failed")
+
         stripped = (query or "").strip()
         if not stripped:
-            return "No search query was provided."
+            return WebSearchResult(ok=False, error_code="empty_query")
 
-        # Run every topic in parallel on the same query, then keep the highest
-        # scoring response. return_exceptions=True so one topic failing (or one
-        # topic refusing) never sinks the whole search.
         responses = await asyncio.gather(
             *(
                 asyncio.to_thread(self._run_tavily_search, stripped, topic)
@@ -273,38 +295,50 @@ class WebSearchTool:
             return_exceptions=True,
         )
 
-        best: tuple[float, str, str] | None = None  # (score, topic, text)
-        best_response: Any | None = None  # Winning raw response, for source capture
+        best: tuple[float, str, str, list[dict]] | None = None
+        provider_responses = 0
         for topic, response in zip(_DUAL_SEARCH_TOPICS, responses):
             if isinstance(response, Exception):
                 continue
+            provider_responses += 1
             score = self._effective_score(response)
             text = self._answer_from_tavily_response(response)
-            # `>` (not `>=`) preserves the topic order in _DUAL_SEARCH_TOPICS as
-            # the tie-break: "general" is scored first and kept on ties.
+            sources = self._sources_from_tavily_response(response, self.max_results)
+            # A high relevance score is not enough: only choose a result that
+            # contains both readable research content and valid HTTP(S) source
+            # records. A malformed high-scoring result must not suppress a
+            # slightly lower-scoring but properly cited alternative topic.
+            if not text.strip() or not sources or self._is_refusal_answer(text):
+                continue
             if best is None or score > best[0]:
-                best = (score, topic, text)
-                best_response = response
+                best = (score, topic, text, sources)
 
         if best is None:
-            return "Web search is temporarily unavailable. Please try again later."
-
-        best_score, best_topic, best_text = best
-
-        # Capture the winning response's structured
-        # sources (url/title/snippet/score) for web citations. Accumulate across any
-        # multiple tavily calls in the turn; deduped by url when references are built.
-        try:
-            self._captured_sources.extend(
-                self._sources_from_tavily_response(best_response, self.max_results)
+            return WebSearchResult(
+                ok=False,
+                error_code="no_usable_sources" if provider_responses else "provider_error",
             )
-        except Exception:
-            # Source capture is best-effort; never log provider payloads here.
-            pass
-        if not best_text.strip():
-            return (
-                _WEB_PREFIX.rstrip()
-                + "Web search returned no usable text for this query."
-            )
-        return _WEB_PREFIX + best_text
 
+        _, _, best_text, sources = best
+
+        # The answer is always traceable to these source records in the graph.
+        self._captured_sources = sources
+        return WebSearchResult(
+            ok=True,
+            text=best_text,
+            sources=tuple(sources),
+        )
+
+    async def search(self, query: str) -> str:
+        """Compatibility wrapper returning the historical prompt-friendly text."""
+        result = await self.search_structured(query)
+        if not result.ok:
+            messages = {
+                "sdk_unavailable": "Web search is not available: the search SDK is not initialized.",
+                "empty_query": "No search query was provided.",
+                "query_preparation_failed": "Web search could not prepare this query.",
+                "provider_error": "Web search is temporarily unavailable. Please check the search provider configuration and connectivity.",
+                "no_usable_sources": "Web search returned no usable, citable sources for this query.",
+            }
+            return messages.get(result.error_code or "", "Web search is temporarily unavailable.")
+        return _WEB_PREFIX + result.text
