@@ -143,7 +143,7 @@ _CONTEXTUAL_QUERY_CUES = re.compile(
     r"\b(?:it|its|they|them|their|theirs|this|that|these|those|he|she|him|her|his|hers|"
     r"former|latter|same|another|both|either|neither|there|then|above|earlier|previous|"
     r"first|second|third|other one)\b|"
-    r"^(?:and|also|what about|how about|why\\??$|how so|can you elaborate|elaborate|"
+    r"^(?:and|also|what about|how about|why\??$|how so|can you elaborate|elaborate|"
     r"explain further|tell me more|what else|which one)\b",
     re.IGNORECASE,
 )
