@@ -27,3 +27,9 @@ def test_supplier_quote_market_fairness_question_uses_both_sources():
     assert classify_source_intent(
         "Compare this supplier quotation with the going market rate and tell me if it is fair."
     ) == "both"
+
+
+def test_supplier_quote_fairness_question_uses_independent_external_evidence():
+    assert classify_source_intent(
+        "Is this supplier quote fair, overpriced, or a good deal?"
+    ) == "both"
