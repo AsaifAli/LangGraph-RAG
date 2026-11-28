@@ -68,3 +68,31 @@ async def test_structured_search_reports_provider_failure_without_fake_answer():
     assert result.text == ""
     assert result.sources == ()
     assert result.error_code == "provider_error"
+
+
+@pytest.mark.asyncio
+async def test_search_uses_best_result_that_has_valid_citable_sources():
+    class MixedQualityTavily:
+        def search(self, **kwargs):
+            if kwargs["topic"] == "general":
+                return {
+                    "answer": "High score but no citable URL",
+                    "results": [{"url": "javascript:alert(1)", "content": "bad", "score": 0.99}],
+                }
+            return {
+                "answer": "A supported fallback answer",
+                "results": [{
+                    "url": "https://example.com/valid",
+                    "title": "Valid source",
+                    "content": "A citable excerpt",
+                    "score": 0.72,
+                }],
+            }
+
+    tool = WebSearchTool(api_key="test")
+    tool._client = MixedQualityTavily()
+    result = await tool.search_structured("supplier quotation market rates")
+
+    assert result.ok is True
+    assert result.text == "A supported fallback answer"
+    assert result.sources[0]["url"] == "https://example.com/valid"
