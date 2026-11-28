@@ -128,6 +128,8 @@ AGENTIC_RETRIEVAL_ENABLED = _get_env("AGENTIC_RETRIEVAL_ENABLED", "true").strip(
 MAX_AGENTIC_RETRIEVAL_ROUNDS = int(_get_env("MAX_AGENTIC_RETRIEVAL_ROUNDS", "2"))
 AGENTIC_RETRIEVAL_MIN_HITS = int(_get_env("AGENTIC_RETRIEVAL_MIN_HITS", "2"))
 RRF_K = int(_get_env("RRF_K", "60"))
+RETRIEVAL_CONTEXT_WINDOW_CHUNKS = max(0, min(2, int(_get_env("RETRIEVAL_CONTEXT_WINDOW_CHUNKS", "1"))))
+RETRIEVAL_CONTEXT_MAX_EXTRA_CHUNKS = max(0, min(16, int(_get_env("RETRIEVAL_CONTEXT_MAX_EXTRA_CHUNKS", "6"))))
 
 # Populated lazily after OpenSearch deploys the local sparse models.
 _SPARSE_ENCODING_MODEL_ID: str | None = None
@@ -942,6 +944,11 @@ def _build_filters(
     ]
     if document_ids:
         filters.append({"terms": {"document_id": document_ids}})
+    else:
+        # A missing document scope is not "all documents for this owner".
+        # Global + active-thread IDs are the authorization boundary; fail
+        # closed when that allow-list is empty to prevent cross-chat leakage.
+        filters.append({"match_none": {}})
     return filters
 
 
@@ -1071,6 +1078,10 @@ async def retrieve_and_rerank(
     top_k: int = DEFAULT_TOP_K,
     owner_scope: str = LOCAL_OWNER_SCOPE,
 ) -> list[RetrievedChunk]:
+    # Do not make even an OpenSearch request without an explicit authorised
+    # document allow-list. This also prevents needless provider/model work.
+    if not document_ids:
+        return []
     client = build_opensearch_client()
     index_name = opensearch_index_name(tenant_schema, platform_tenant_id)
     await _to_thread_with_retry(ensure_opensearch_index, client, index_name=index_name)
@@ -1128,6 +1139,170 @@ async def _plan_agentic_queries(model: Any, query: str, *, tried: list[str]) -> 
         return []
 
 
+def _context_window_query_body(
+    chunks: list[RetrievedChunk],
+    *,
+    document_ids: list[str],
+    tenant_schema: str,
+    platform_tenant_id: str,
+    owner_scope: str,
+    window: int,
+    size: int,
+) -> dict[str, Any]:
+    """Build an allow-list-scoped query for neighbours of selected passages."""
+    allowed = {str(document_id) for document_id in document_ids}
+    ranges: dict[str, list[tuple[int, int]]] = {}
+    for chunk in chunks:
+        document_id = str(chunk.document_id or "")
+        try:
+            chunk_number = int(chunk.meta_data.get("chunk_number") or 0)
+        except (TypeError, ValueError):
+            continue
+        if document_id not in allowed or chunk_number < 1:
+            continue
+        ranges.setdefault(document_id, []).append(
+            (max(1, chunk_number - window), chunk_number + window)
+        )
+
+    should: list[dict[str, Any]] = []
+    for document_id, intervals in sorted(ranges.items()):
+        merged: list[list[int]] = []
+        for start, end in sorted(intervals):
+            if merged and start <= merged[-1][1] + 1:
+                merged[-1][1] = max(merged[-1][1], end)
+            else:
+                merged.append([start, end])
+        for start, end in merged:
+            should.append({
+                "bool": {
+                    "filter": [
+                        {"term": {"document_id": document_id}},
+                        {"range": {"chunk_number": {"gte": start, "lte": end}}},
+                    ]
+                }
+            })
+
+    filters = _build_filters(
+        list(document_ids), tenant_schema, platform_tenant_id, owner_scope
+    )
+    if should:
+        filters.append({"bool": {"should": should, "minimum_should_match": 1}})
+    else:
+        filters.append({"match_none": {}})
+
+    return {
+        "size": max(0, int(size)),
+        "track_total_hits": False,
+        "_source": {"excludes": ["passage_embedding"]},
+        "query": {"bool": {"filter": filters}},
+        "sort": [
+            {"document_id": {"order": "asc"}},
+            {"chunk_number": {"order": "asc"}},
+        ],
+    }
+
+
+async def _expand_context_chunks(
+    chunks: list[RetrievedChunk],
+    *,
+    tenant_schema: str,
+    platform_tenant_id: str,
+    document_ids: list[str],
+    owner_scope: str,
+    window: int = RETRIEVAL_CONTEXT_WINDOW_CHUNKS,
+    max_extra: int = RETRIEVAL_CONTEXT_MAX_EXTRA_CHUNKS,
+) -> list[RetrievedChunk]:
+    """Append adjacent chunks as explicitly marked context, never as new seeds.
+
+    Neighbours are fetched only for documents in the caller's allow-list. A
+    neighbour lookup failure leaves the original ranked evidence untouched.
+    """
+    allowed = {str(document_id) for document_id in document_ids}
+    authorised_chunks = [
+        chunk for chunk in chunks
+        if str(chunk.document_id or "") in allowed
+    ]
+    if not allowed or not authorised_chunks:
+        return []
+    if window <= 0 or max_extra <= 0:
+        return authorised_chunks
+
+    body = _context_window_query_body(
+        authorised_chunks,
+        document_ids=list(document_ids),
+        tenant_schema=tenant_schema,
+        platform_tenant_id=platform_tenant_id,
+        owner_scope=owner_scope,
+        window=window,
+        size=max_extra + len(authorised_chunks),
+    )
+    should = next(
+        (
+            item["bool"]["should"]
+            for item in body["query"]["bool"]["filter"]
+            if isinstance(item, dict) and "bool" in item and "should" in item["bool"]
+        ),
+        [],
+    )
+    if not should:
+        return authorised_chunks
+
+    try:
+        client = build_opensearch_client()
+        index_name = opensearch_index_name(tenant_schema, platform_tenant_id)
+        response = await _to_thread_with_retry(
+            client.search, index=index_name, body=body
+        )
+        neighbour_chunks = _results_to_chunks(
+            response.get("hits", {}).get("hits", [])
+        )
+    except Exception:
+        # Context completion is an enhancement; preserve the ranked seed set.
+        return authorised_chunks
+
+    centers: dict[tuple[str, int], list[str]] = {}
+    existing: set[tuple[str, int]] = set()
+    for chunk in authorised_chunks:
+        try:
+            number = int(chunk.meta_data.get("chunk_number") or 0)
+        except (TypeError, ValueError):
+            continue
+        key = (chunk.document_id, number)
+        if number > 0:
+            existing.add(key)
+            centers.setdefault(key, []).append(chunk.evidence_id)
+
+    extras: list[RetrievedChunk] = []
+    for neighbor in neighbour_chunks:
+        try:
+            number = int(neighbor.meta_data.get("chunk_number") or 0)
+        except (TypeError, ValueError):
+            continue
+        key = (neighbor.document_id, number)
+        if number < 1 or key in existing or neighbor.document_id not in allowed:
+            continue
+        related = [
+            evidence_id
+            for (doc_id, center_number), evidence_ids in centers.items()
+            if doc_id == neighbor.document_id and abs(center_number - number) <= window
+            for evidence_id in evidence_ids
+        ]
+        if not related:
+            continue
+        neighbor.score = 0.0
+        neighbor.meta_data["context_only"] = True
+        neighbor.meta_data["context_for"] = sorted(set(related))
+        extras.append(neighbor)
+        existing.add(key)
+        if len(extras) >= max_extra:
+            break
+
+    combined = authorised_chunks + extras
+    for index, chunk in enumerate(combined, start=1):
+        chunk.evidence_id = f"E{index}"
+    return combined
+
+
 async def retrieve_with_self_correction(
     query: str,
     *,
@@ -1146,6 +1321,9 @@ async def retrieve_with_self_correction(
     from all attempts are fused and then optionally reranked. The hard round
     limit prevents runaway tool/LLM usage.
     """
+    if not document_ids:
+        return [], query
+
     tried = [query]
     best_chunks = await retrieve_and_rerank(
         query,
@@ -1157,43 +1335,49 @@ async def retrieve_with_self_correction(
     )
     best_query = query
 
-    if not AGENTIC_RETRIEVAL_ENABLED or len(best_chunks) >= AGENTIC_RETRIEVAL_MIN_HITS:
-        return best_chunks, best_query
+    if AGENTIC_RETRIEVAL_ENABLED and len(best_chunks) < AGENTIC_RETRIEVAL_MIN_HITS:
+        for _ in range(max(0, max_rounds)):
+            candidates = await _plan_agentic_queries(model, query, tried=tried)
+            if not candidates:
+                break
+            for candidate in candidates:
+                tried.append(candidate)
+            searches = await asyncio.gather(
+                *[
+                    retrieve_and_rerank(
+                        candidate,
+                        tenant_schema=tenant_schema,
+                        platform_tenant_id=platform_tenant_id,
+                        document_ids=document_ids,
+                        top_k=top_k,
+                        owner_scope=owner_scope,
+                    )
+                    for candidate in candidates
+                ],
+                return_exceptions=True,
+            )
+            candidate_chunks = [x for x in searches if isinstance(x, list)]
+            if not candidate_chunks:
+                break
+            merged = {c.content: c for c in best_chunks}
+            for group in candidate_chunks:
+                for chunk in group:
+                    if chunk.content not in merged or chunk.score > merged[chunk.content].score:
+                        merged[chunk.content] = chunk
+            merged_list = sorted(merged.values(), key=lambda c: -c.score)[:top_k]
+            if merged_list and (not best_chunks or merged_list[0].score > best_chunks[0].score or len(merged_list) > len(best_chunks)):
+                best_chunks = merged_list
+                best_query = "; ".join(candidates)
+            if len(best_chunks) >= AGENTIC_RETRIEVAL_MIN_HITS:
+                break
 
-    for _ in range(max(0, max_rounds)):
-        candidates = await _plan_agentic_queries(model, query, tried=tried)
-        if not candidates:
-            break
-        for candidate in candidates:
-            tried.append(candidate)
-        searches = await asyncio.gather(
-            *[
-                retrieve_and_rerank(
-                    candidate,
-                    tenant_schema=tenant_schema,
-                    platform_tenant_id=platform_tenant_id,
-                    document_ids=document_ids,
-                    top_k=top_k,
-                    owner_scope=owner_scope,
-                )
-                for candidate in candidates
-            ],
-            return_exceptions=True,
-        )
-        candidate_chunks = [x for x in searches if isinstance(x, list)]
-        if not candidate_chunks:
-            break
-        merged = {c.content: c for c in best_chunks}
-        for group in candidate_chunks:
-            for chunk in group:
-                if chunk.content not in merged or chunk.score > merged[chunk.content].score:
-                    merged[chunk.content] = chunk
-        merged_list = sorted(merged.values(), key=lambda c: -c.score)[:top_k]
-        if merged_list and (not best_chunks or merged_list[0].score > best_chunks[0].score or len(merged_list) > len(best_chunks)):
-            best_chunks = merged_list
-            best_query = "; ".join(candidates)
-        if len(best_chunks) >= AGENTIC_RETRIEVAL_MIN_HITS:
-            break
+    best_chunks = await _expand_context_chunks(
+        best_chunks,
+        tenant_schema=tenant_schema,
+        platform_tenant_id=platform_tenant_id,
+        document_ids=document_ids,
+        owner_scope=owner_scope,
+    )
     for i, chunk in enumerate(best_chunks, start=1):
         chunk.evidence_id = f"E{i}"
     return best_chunks, best_query
