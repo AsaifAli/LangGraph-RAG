@@ -942,6 +942,11 @@ def _build_filters(
     ]
     if document_ids:
         filters.append({"terms": {"document_id": document_ids}})
+    else:
+        # A missing document scope is not "all documents for this owner".
+        # Global + active-thread IDs are the authorization boundary; fail
+        # closed when that allow-list is empty to prevent cross-chat leakage.
+        filters.append({"match_none": {}})
     return filters
 
 
@@ -1071,6 +1076,10 @@ async def retrieve_and_rerank(
     top_k: int = DEFAULT_TOP_K,
     owner_scope: str = LOCAL_OWNER_SCOPE,
 ) -> list[RetrievedChunk]:
+    # Do not make even an OpenSearch request without an explicit authorised
+    # document allow-list. This also prevents needless provider/model work.
+    if not document_ids:
+        return []
     client = build_opensearch_client()
     index_name = opensearch_index_name(tenant_schema, platform_tenant_id)
     await _to_thread_with_retry(ensure_opensearch_index, client, index_name=index_name)
@@ -1146,6 +1155,9 @@ async def retrieve_with_self_correction(
     from all attempts are fused and then optionally reranked. The hard round
     limit prevents runaway tool/LLM usage.
     """
+    if not document_ids:
+        return [], query
+
     tried = [query]
     best_chunks = await retrieve_and_rerank(
         query,
