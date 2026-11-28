@@ -71,3 +71,11 @@ def test_rewriter_is_not_called_for_standalone_questions_or_without_history():
     assert standalone == "What is the payment schedule?"
     assert first_turn == "What about it?"
     assert model.calls == []
+
+
+
+def test_why_only_follow_up_is_contextual_but_standalone_why_question_is_not():
+    history = [HumanMessage(content="The policy excludes water damage.")]
+
+    assert _needs_contextual_rewrite("Why?", history)
+    assert not _needs_contextual_rewrite("Why does the contract have a renewal clause?", history)
