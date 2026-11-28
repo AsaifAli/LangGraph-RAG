@@ -295,22 +295,31 @@ class WebSearchTool:
             return_exceptions=True,
         )
 
-        best: tuple[float, str, str, Any] | None = None
+        best: tuple[float, str, str, list[dict]] | None = None
+        provider_responses = 0
         for topic, response in zip(_DUAL_SEARCH_TOPICS, responses):
             if isinstance(response, Exception):
                 continue
+            provider_responses += 1
             score = self._effective_score(response)
             text = self._answer_from_tavily_response(response)
+            sources = self._sources_from_tavily_response(response, self.max_results)
+            # A high relevance score is not enough: only choose a result that
+            # contains both readable research content and valid HTTP(S) source
+            # records. A malformed high-scoring result must not suppress a
+            # slightly lower-scoring but properly cited alternative topic.
+            if not text.strip() or not sources or self._is_refusal_answer(text):
+                continue
             if best is None or score > best[0]:
-                best = (score, topic, text, response)
+                best = (score, topic, text, sources)
 
         if best is None:
-            return WebSearchResult(ok=False, error_code="provider_error")
+            return WebSearchResult(
+                ok=False,
+                error_code="no_usable_sources" if provider_responses else "provider_error",
+            )
 
-        _, _, best_text, best_response = best
-        sources = self._sources_from_tavily_response(best_response, self.max_results)
-        if not best_text.strip() or not sources:
-            return WebSearchResult(ok=False, error_code="no_usable_sources")
+        _, _, best_text, sources = best
 
         # The answer is always traceable to these source records in the graph.
         self._captured_sources = sources
