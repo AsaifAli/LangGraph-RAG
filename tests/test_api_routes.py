@@ -610,3 +610,61 @@ def test_chat_retrieval_scope_contains_global_and_only_active_thread_documents(m
         "private-a": "thread-a.txt",
     }
     assert "private-b" not in captured["ids"]
+
+
+
+def test_safe_outcome_exposes_bounded_graph_provenance_without_internal_scope():
+    outcome = api_main._safe_outcome({
+        "final_answer": "Northbridge shares a control with FDA [EVID: E1].",
+        "chunks": [{
+            "evidence_id": "E1",
+            "document_id": "doc-a",
+            "content": "Grounded evidence",
+            "meta_data": {
+                "source_name": "agreement.pdf",
+                "graph_expanded": True,
+                "graph_hop": 2,
+                "graph_shared_entities": ["northbridge", "fda"],
+                "owner_scope": "private-owner-scope",
+                "entity_terms": ["northbridge", "fda"],
+            },
+        }],
+    })
+
+    metadata = outcome["chunks"][0]["meta_data"]
+    assert metadata["graph_expanded"] is True
+    assert metadata["graph_hop"] == 2
+    assert metadata["graph_shared_entities"] == ["northbridge", "fda"]
+    assert "owner_scope" not in metadata
+    assert "entity_terms" not in metadata
+
+
+
+def test_graph_expansion_metrics_count_internal_retrieved_chunk_dataclasses():
+    from retrieval.rag_pipeline import RetrievedChunk
+
+    chunks = [
+        RetrievedChunk(
+            evidence_id="E1",
+            document_id="doc-a",
+            content="Graph neighbour",
+            score=0.1,
+            meta_data={"graph_expanded": True},
+        ),
+        RetrievedChunk(
+            evidence_id="E2",
+            document_id="doc-a",
+            content="Seed passage",
+            score=0.2,
+            meta_data={"graph_expanded": False},
+        ),
+        {
+            "evidence_id": "E3",
+            "document_id": "doc-a",
+            "content": "Another graph neighbour",
+            "score": 0.1,
+            "meta_data": {"graph_expanded": True},
+        },
+    ]
+
+    assert api_main._graph_expanded_chunk_count(chunks) == 2

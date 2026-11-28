@@ -1,5 +1,12 @@
 # Portfolio Upgrade — 2026-08-10
 
+## Unreleased
+
+- Add bounded entity-co-occurrence graph retrieval to sparse-first RAG, preserving the existing owner/thread/tenant filters and cross-encoder reranking.
+- Add a dry-run-first, scoped backfill utility for entity edges on previously indexed documents.
+- Expose graph-expansion provenance safely in evidence metadata and retrieval evaluation metrics.
+- Validation: Python compile check and full backend suite pass (195 tests; 18 Starlette deprecation warnings).
+
 ## Added
 
 - Evidence-quality conflict candidates and fail-closed KB abstention.

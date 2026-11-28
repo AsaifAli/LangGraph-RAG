@@ -100,6 +100,14 @@ If neural-sparse model deployment is unavailable, the system falls back to the c
 
 The important architectural distinction is that **dense-vector retrieval is not the foundation of EvidenceFlow**. The classical inverted-index/BM25 path works independently, while neural-sparse retrieval is an optional additional signal.
 
+### 3. Bounded entity-graph expansion
+
+EvidenceFlow also has a lightweight GraphRAG-style retrieval pass over an implicit passage/entity graph stored in the same OpenSearch index. At ingestion, deterministic extraction adds normalized entity candidates, acronyms and standards to each chunk's entity_terms field. Passages sharing those terms are connected through entity nodes. After the sparse first pass, retrieval can traverse up to two hops and add at most six graph-neighbour chunks before the existing cross-encoder reranker selects the final evidence.
+
+Graph expansion reuses the same verified owner, tenant and explicit document-ID allow-list as ordinary search at every hop. It cannot broaden access to another conversation's files. This is an entity co-occurrence graph, not a semantic subject-predicate-object ontology or a separate graph database. New uploads receive entity terms automatically. Existing indexes can be enriched without re-uploading the source files: run python scripts/backfill_graph_entities.py for a dry-run count, then python scripts/backfill_graph_entities.py --apply to update the configured tenant index. The script can optionally be limited with --owner-scope or repeated --document-id arguments; it writes only derived entity_terms, not passage text.
+
+Configure with GRAPH_RAG_ENABLED, GRAPH_RAG_MAX_HOPS, GRAPH_RAG_MAX_ENTITIES and GRAPH_RAG_MAX_CHUNKS in .env. The default traversal is capped at two hops, twelve entity terms per hop and six additional chunks.
+
 ## Agentic retrieval and self-correction
 
 EvidenceFlow does not immediately invoke an LLM to rewrite every search query. Retrieval starts with a bounded, deterministic first pass.
