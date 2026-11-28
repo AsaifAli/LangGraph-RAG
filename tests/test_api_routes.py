@@ -592,6 +592,7 @@ def test_chat_retrieval_scope_contains_global_and_only_active_thread_documents(m
             "trust": {"label": "VERIFIED"},
         }
 
+    monkeypatch.setattr(api_main, "checkpointer", object())
     monkeypatch.setattr(api_main, "build_langgraph_agent", fake_build_agent)
     monkeypatch.setattr(api_main, "astream_langgraph_turn", fake_stream)
     monkeypatch.setattr(api_main.owner_rate_limiter, "enforce", lambda *args, **kwargs: None)
