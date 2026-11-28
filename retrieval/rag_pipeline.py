@@ -1629,6 +1629,24 @@ def get_web_search_tool(*, max_results: int = DEFAULT_WEB_SEARCH_MAX_RESULTS):
     return WebSearchTool(api_key=api_key, max_results=max_results or config.web_search.web_search_max_results)
 
 
+def get_web_search_capability() -> dict[str, Any]:
+    """Return a non-secret web-search capability status for the workspace UI."""
+    try:
+        config = load_runtime_config()
+        api_key = (config.web_search.web_search_api_key or "").strip()
+        if not api_key:
+            return {"provider": "Tavily", "status": "not_configured", "available": False}
+        tool = get_web_search_tool()
+    except ImportError:
+        return {"provider": "Tavily", "status": "sdk_unavailable", "available": False}
+    except Exception:  # noqa: BLE001 - optional integration boundary
+        return {"provider": "Tavily", "status": "initialization_failed", "available": False}
+    return {
+        "provider": "Tavily",
+        "status": "configured" if tool.available else "sdk_unavailable",
+        "available": bool(tool.available),
+    }
+
 def make_token_tracker():
     from langchain_core.callbacks import UsageMetadataCallbackHandler
 

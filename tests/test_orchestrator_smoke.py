@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, HumanMessage
 
 from agents import custom_langgraph_poc as core
 from agents import multi_agent_orchestrator as orchestrator
@@ -368,3 +368,147 @@ async def test_core_stream_executes_graph_once_and_emits_one_final(
     ) == 1
 
     assert events[-1]["final_answer"] == "verified"
+
+class FixedAnswerModel:
+    def __init__(self):
+        self.tool_names = []
+        self.calls = 0
+
+    def bind_tools(self, tools):
+        self.tool_names = [tool.name for tool in tools]
+        return self
+
+    async def ainvoke(self, messages):
+        self.calls += 1
+        return AIMessage(content="The current public standard is described by the cited source [WEB: W1].")
+
+
+class SuccessfulWebSearch:
+    available = True
+
+    async def search_structured(self, query):
+        return SimpleNamespace(
+            ok=True,
+            text="A search provider summary.",
+            sources=(
+                {
+                    "evidence_id": "W1",
+                    "title": "Official standards page",
+                    "url": "https://example.com/standards",
+                    "content": "The standard was updated recently.",
+                    "score": 0.95,
+                },
+            ),
+            error_code=None,
+        )
+
+
+@pytest.mark.asyncio
+async def test_explicit_web_request_bypasses_unrelated_document_retrieval():
+    model = FixedAnswerModel()
+    graph = core._build_graph(
+        model=model,
+        web_search_tool=SuccessfulWebSearch(),
+        primary_source_mcp=SimpleNamespace(available=False),
+    ).compile()
+
+    result = await graph.ainvoke(
+        {
+            "messages": [HumanMessage(content="Search the web for the latest safety standards.")],
+            "document_ids": ["unrelated-supplier-quote"],
+            "document_names": {"unrelated-supplier-quote": "supplier-quote.pdf"},
+        }
+    )
+
+    assert result["source_mode"] == "web"
+    assert result["needs_kb"] is False
+    assert result["web_search_status"] == "succeeded"
+    assert result["web_sources"][0]["evidence_id"] == "W1"
+    # The one model call is synthesis. The route tool-selection call is bypassed.
+    assert model.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_explicit_web_request_without_search_does_not_fall_back_to_documents():
+    model = FixedAnswerModel()
+    graph = core._build_graph(
+        model=model,
+        web_search_tool=None,
+        primary_source_mcp=SimpleNamespace(available=False),
+    ).compile()
+
+    result = await graph.ainvoke(
+        {
+            "messages": [HumanMessage(content="Search the web for the latest safety standards.")],
+            "document_ids": ["unrelated-supplier-quote"],
+        }
+    )
+
+    assert result["source_mode"] == "web"
+    assert result.get("needs_kb") is not True
+    assert result["web_search_status"] == "unavailable"
+    assert "did not substitute uploaded documents" in result["final_answer"]
+
+
+def test_failed_web_search_is_not_reported_as_successful_external_research():
+    result = core._finalize_outcome(
+        {
+            "final_answer": "External research could not be completed.",
+            "source_mode": "web",
+            "web_search_status": "failed",
+            "web_search_error_code": "provider_error",
+            "web_summary": "Web search is temporarily unavailable.",
+            "web_sources": [],
+            "needs_kb": False,
+        },
+        SimpleNamespace(usage_metadata={}),
+        None,
+    )
+
+    assert result["used_web"] is False
+    assert result["used_web_sources"] is False
+    assert result["web_search_status"] == "failed"
+    assert result["web_search_error_code"] == "provider_error"
+
+
+@pytest.mark.asyncio
+async def test_quote_market_comparison_requires_both_uploaded_evidence_and_web_results(monkeypatch):
+    async def no_document_chunks(*args, **kwargs):
+        return []
+
+    monkeypatch.setattr(core, "fetch_all_document_chunks", no_document_chunks)
+    model = FixedAnswerModel()
+    graph = core._build_graph(
+        model=model,
+        web_search_tool=SuccessfulWebSearch(),
+        primary_source_mcp=SimpleNamespace(available=False),
+    ).compile()
+
+    result = await graph.ainvoke(
+        {
+            "messages": [HumanMessage(content="Compare this supplier quotation with the going market rate and tell me if it is fair.")],
+            "document_ids": ["supplier-quote"],
+            "tenant_schema": "test_tenant",
+            "platform_tenant_id": "test_platform",
+            "owner_scope": "test_owner",
+        }
+    )
+
+    assert result["source_mode"] == "both"
+    assert result["needs_kb"] is True
+    assert result["needs_web"] is True
+
+
+def test_web_capability_is_reported_as_non_secret_configuration_state(monkeypatch):
+    from types import SimpleNamespace
+    from retrieval import rag_pipeline
+
+    monkeypatch.setattr(
+        rag_pipeline,
+        "load_runtime_config",
+        lambda: SimpleNamespace(web_search=SimpleNamespace(web_search_api_key="")),
+    )
+    capability = rag_pipeline.get_web_search_capability()
+
+    assert capability == {"provider": "Tavily", "status": "not_configured", "available": False}
+    assert "api_key" not in capability

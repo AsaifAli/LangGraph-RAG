@@ -668,3 +668,57 @@ def test_graph_expansion_metrics_count_internal_retrieved_chunk_dataclasses():
     ]
 
     assert api_main._graph_expanded_chunk_count(chunks) == 2
+
+
+def test_web_citations_link_only_to_sources_returned_by_this_turn():
+    outcome = api_main._safe_outcome({
+        "final_answer": "The public standard was updated [WEB: W1]. Unsupported [WEB: W9].",
+        "web_search_status": "succeeded",
+        "source_mode": "web",
+        "used_web": True,
+        "web_sources": [{
+            "evidence_id": "W1",
+            "title": "Official standards page",
+            "url": "https://example.com/standards",
+            "content": "Updated standard excerpt.",
+        }],
+    })
+
+    assert outcome["final_answer"] == (
+        "The public standard was updated [W1](#web-source-W1). Unsupported."
+    )
+    assert outcome["web_sources"][0]["evidence_id"] == "W1"
+    assert outcome["web_sources"][0]["snippet"] == "Updated standard excerpt."
+    assert outcome["web_search_status"] == "succeeded"
+    assert outcome["source_mode"] == "web"
+
+
+def test_session_status_reports_web_search_capability_without_exposing_credentials(monkeypatch):
+    test_store = _test_store()
+    monkeypatch.setattr(api_main, "store", test_store)
+    monkeypatch.setattr(
+        api_main,
+        "get_web_search_capability",
+        lambda: {"provider": "Tavily", "status": "not_configured", "available": False},
+    )
+    session_id = test_store.create_session(
+        access_token="secret-gateway-token",
+        owner_scope="e" * 64,
+        provider="openrouter",
+        model="test-model",
+        expires_in=600,
+    )
+
+    response = TestClient(api_main.app).get(
+        "/api/v1/session",
+        cookies={api_main.COOKIE_NAME: session_id},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["capabilities"]["web_search"] == {
+        "provider": "Tavily",
+        "status": "not_configured",
+        "available": False,
+    }
+    assert "secret-gateway-token" not in response.text
+    assert "api_key" not in response.text.lower()
