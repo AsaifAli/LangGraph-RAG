@@ -838,7 +838,7 @@ async def stream_chat_message(
                         },
                     )
 
-                    runtime_metrics = build_runtime_evaluation_metrics(outcome)
+                    runtime_metrics = build_runtime_evaluation_metrics(final_outcome)
                     if runtime_metrics:
                         record_event(
                             event_type="evaluation.completed",
