@@ -530,3 +530,82 @@ def test_chat_scoped_upload_rejects_an_unknown_thread_before_indexing(monkeypatc
     )
 
     assert response.status_code == 404
+
+
+def test_chat_retrieval_scope_contains_global_and_only_active_thread_documents(monkeypatch):
+    test_store = _test_store()
+    monkeypatch.setattr(api_main, "store", test_store)
+    owner_scope = "c" * 64
+    session_id = test_store.create_session(
+        access_token="gateway-token",
+        owner_scope=owner_scope,
+        provider="",
+        model="",
+        expires_in=600,
+    )
+    client = TestClient(api_main.app)
+    cookies = {api_main.COOKIE_NAME: session_id}
+    thread_a = client.post("/api/v1/chats", cookies=cookies).json()["thread_id"]
+    thread_b = client.post("/api/v1/chats", cookies=cookies).json()["thread_id"]
+
+    global_document = {
+        "name": "shared.pdf", "document_id": "global-doc", "chunk_count": 2,
+        "owner_scope": owner_scope, "scope": "global",
+    }
+    private_a = {
+        "name": "thread-a.txt", "document_id": "private-a", "chunk_count": 1,
+        "owner_scope": owner_scope, "scope": "chat",
+    }
+    private_b = {
+        "name": "thread-b.txt", "document_id": "private-b", "chunk_count": 1,
+        "owner_scope": owner_scope, "scope": "chat",
+    }
+    state = test_store.get_workspace(owner_scope)
+    state["global_documents"] = [global_document]
+    for chat in state["chats"]:
+        if chat["thread_id"] == thread_a:
+            chat["uploaded_docs"] = [private_a]
+        elif chat["thread_id"] == thread_b:
+            chat["uploaded_docs"] = [private_b]
+    test_store.save_workspace(owner_scope, state)
+
+    captured = {}
+
+    def fake_build_agent(**kwargs):
+        captured["ids"] = kwargs["document_ids_provider"]()
+        captured["names"] = kwargs["document_names_provider"]()
+        return {"agent": "test-agent"}
+
+    async def fake_stream(agent, message, *, thread_id):
+        yield {
+            "type": "final",
+            "final_answer": "Evidence from the active conversation.",
+            "chunks": [],
+            "web_sources": [],
+            "delegations": [],
+            "used_knowledge_base": True,
+            "used_web": False,
+            "used_primary_source": False,
+            "abstained": False,
+            "grounding_status": "VERIFIED",
+            "quality": {},
+            "trust": {"label": "VERIFIED"},
+        }
+
+    monkeypatch.setattr(api_main, "build_langgraph_agent", fake_build_agent)
+    monkeypatch.setattr(api_main, "astream_langgraph_turn", fake_stream)
+    monkeypatch.setattr(api_main.owner_rate_limiter, "enforce", lambda *args, **kwargs: None)
+
+    response = client.post(
+        f"/api/v1/chats/{thread_a}/messages",
+        json={"message": "What does the private attachment say?"},
+        cookies=cookies,
+    )
+
+    assert response.status_code == 200
+    assert captured["ids"] == ["global-doc", "private-a"]
+    assert captured["names"] == {
+        "global-doc": "shared.pdf",
+        "private-a": "thread-a.txt",
+    }
+    assert "private-b" not in captured["ids"]
