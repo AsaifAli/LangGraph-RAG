@@ -400,3 +400,133 @@ def test_evidenceflow_revoke_preserves_local_session_on_gateway_failure_then_ret
     assert "max-age=0" in succeeded.headers.get("set-cookie", "").lower()
     assert test_store.get_session(session_id) is None
     assert calls == ["gateway-child-token", "gateway-child-token"]
+
+
+def test_chat_scoped_document_listing_only_includes_the_requested_thread(monkeypatch):
+    test_store = _test_store()
+    monkeypatch.setattr(api_main, "store", test_store)
+    owner_scope = "f" * 64
+    session_id = test_store.create_session(
+        access_token="gateway-token",
+        owner_scope=owner_scope,
+        provider="",
+        model="",
+        expires_in=600,
+    )
+    global_document = {
+        "name": "shared.pdf", "document_id": "global-1", "chunk_count": 2,
+        "owner_scope": owner_scope, "scope": "global",
+    }
+    private_a = {
+        "name": "thread-a.txt", "document_id": "chat-a", "chunk_count": 1,
+        "owner_scope": owner_scope, "scope": "chat",
+    }
+    private_b = {
+        "name": "thread-b.txt", "document_id": "chat-b", "chunk_count": 1,
+        "owner_scope": owner_scope, "scope": "chat",
+    }
+    thread_a = "a" * 32
+    thread_b = "b" * 32
+    test_store.save_workspace(owner_scope, {
+        "global_documents": [global_document],
+        "chats": [
+            {"thread_id": thread_a, "messages": [], "uploaded_docs": [private_a]},
+            {"thread_id": thread_b, "messages": [], "uploaded_docs": [private_b]},
+        ],
+    })
+
+    client = TestClient(api_main.app)
+    headers = {"Cookie": f"{api_main.COOKIE_NAME}={session_id}"}
+    response_a = client.get(
+        f"/api/v1/documents?scope=all&thread_id={thread_a}", headers=headers
+    )
+    response_b = client.get(
+        f"/api/v1/documents?scope=all&thread_id={thread_b}", headers=headers
+    )
+    missing_thread = client.get("/api/v1/documents?scope=chat", headers=headers)
+
+    assert response_a.status_code == 200
+    names_a = {item["name"] for item in response_a.json()["data"]}
+    assert names_a == {"shared.pdf", "thread-a.txt"}
+    assert response_b.status_code == 200
+    names_b = {item["name"] for item in response_b.json()["data"]}
+    assert names_b == {"shared.pdf", "thread-b.txt"}
+    assert missing_thread.status_code == 422
+
+
+def test_chat_scoped_upload_is_indexed_only_for_the_target_conversation(monkeypatch):
+    test_store = _test_store()
+    monkeypatch.setattr(api_main, "store", test_store)
+    owner_scope = "e" * 64
+    session_id = test_store.create_session(
+        access_token="gateway-token",
+        owner_scope=owner_scope,
+        provider="",
+        model="",
+        expires_in=600,
+    )
+    calls = []
+
+    async def fake_ingest(content, *, source_name, owner_scope):
+        calls.append((content, source_name, owner_scope))
+        return {
+            "document_id": "private-document-1",
+            "chunk_count": 3,
+            "modalities": ["text"],
+            "visual_pages_processed": 0,
+            "visual_pages_skipped": 0,
+        }
+
+    monkeypatch.setattr(api_main, "ingest_document", fake_ingest)
+    client = TestClient(api_main.app)
+    cookies = {api_main.COOKIE_NAME: session_id}
+    thread_a = client.post("/api/v1/chats", cookies=cookies).json()["thread_id"]
+    thread_b = client.post("/api/v1/chats", cookies=cookies).json()["thread_id"]
+
+    uploaded = client.post(
+        "/api/v1/documents",
+        cookies=cookies,
+        data={"scope": "chat", "thread_id": thread_a},
+        files={"file": ("thread-private.txt", b"private conversation evidence", "text/plain")},
+    )
+    assert uploaded.status_code == 201
+    assert uploaded.json()["document"]["scope"] == "chat"
+    assert calls == [(b"private conversation evidence", "thread-private.txt", owner_scope)]
+
+    global_library = client.get("/api/v1/documents?scope=global", cookies=cookies)
+    thread_a_library = client.get(
+        f"/api/v1/documents?scope=all&thread_id={thread_a}", cookies=cookies
+    )
+    thread_b_library = client.get(
+        f"/api/v1/documents?scope=all&thread_id={thread_b}", cookies=cookies
+    )
+
+    assert global_library.status_code == 200
+    assert global_library.json()["data"] == []
+    assert [item["name"] for item in thread_a_library.json()["data"]] == ["thread-private.txt"]
+    assert thread_b_library.json()["data"] == []
+
+
+def test_chat_scoped_upload_rejects_an_unknown_thread_before_indexing(monkeypatch):
+    test_store = _test_store()
+    monkeypatch.setattr(api_main, "store", test_store)
+    session_id = test_store.create_session(
+        access_token="gateway-token",
+        owner_scope="d" * 64,
+        provider="",
+        model="",
+        expires_in=600,
+    )
+
+    async def unexpected_ingest(*args, **kwargs):
+        raise AssertionError("Unknown conversations must be rejected before indexing.")
+
+    monkeypatch.setattr(api_main, "ingest_document", unexpected_ingest)
+    response = TestClient(api_main.app).post(
+        "/api/v1/documents",
+        cookies={api_main.COOKIE_NAME: session_id},
+        data={"scope": "chat", "thread_id": "c" * 32},
+        files={"file": ("private.txt", b"must not be indexed", "text/plain")},
+    )
+
+    assert response.status_code == 404
