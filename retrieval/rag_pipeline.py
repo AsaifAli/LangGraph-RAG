@@ -37,6 +37,8 @@ from urllib.parse import urlsplit
 import httpx
 from typing import Any
 
+from retrieval.graph_rag import extract_entity_terms
+
 _POC_DIR = Path(__file__).resolve().parent.parent
 
 
@@ -128,6 +130,10 @@ AGENTIC_RETRIEVAL_ENABLED = _get_env("AGENTIC_RETRIEVAL_ENABLED", "true").strip(
 MAX_AGENTIC_RETRIEVAL_ROUNDS = int(_get_env("MAX_AGENTIC_RETRIEVAL_ROUNDS", "2"))
 AGENTIC_RETRIEVAL_MIN_HITS = int(_get_env("AGENTIC_RETRIEVAL_MIN_HITS", "2"))
 RRF_K = int(_get_env("RRF_K", "60"))
+GRAPH_RAG_ENABLED = _get_env("GRAPH_RAG_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
+GRAPH_RAG_MAX_HOPS = max(0, min(2, int(_get_env("GRAPH_RAG_MAX_HOPS", "2"))))
+GRAPH_RAG_MAX_ENTITIES = max(0, min(24, int(_get_env("GRAPH_RAG_MAX_ENTITIES", "12"))))
+GRAPH_RAG_MAX_CHUNKS = max(0, min(16, int(_get_env("GRAPH_RAG_MAX_CHUNKS", "6"))))
 RETRIEVAL_CONTEXT_WINDOW_CHUNKS = max(0, min(2, int(_get_env("RETRIEVAL_CONTEXT_WINDOW_CHUNKS", "1"))))
 RETRIEVAL_CONTEXT_MAX_EXTRA_CHUNKS = max(0, min(16, int(_get_env("RETRIEVAL_CONTEXT_MAX_EXTRA_CHUNKS", "6"))))
 
@@ -272,6 +278,54 @@ def _register_and_deploy_model(client: Any, model_name: str, version: str = "1.0
     raise TimeoutError(f"Timed out waiting for OpenSearch model deployment: {model_name}")
 
 
+def _ensure_entity_mapping(client: Any, index_name: str) -> None:
+    """Add graph edge metadata to an existing dynamic=false index."""
+    client.indices.put_mapping(
+        index=index_name,
+        body={
+            "properties": {
+                "modality": {"type": "keyword"},
+                "owner_scope": {"type": "keyword"},
+                "entity_terms": {"type": "keyword"},
+            }
+        },
+    )
+
+
+def _new_index_mapping_body(*, sparse_enabled: bool) -> dict[str, Any]:
+    """Build the strict OpenSearch mapping for new evidence indexes."""
+    mapping: dict[str, Any] = {
+        "dynamic": "false",
+        "properties": {
+            "passage_text": {"type": "text"},
+            "title": {"type": "text"},
+            "heading": {"type": "text"},
+            "section": {"type": "text"},
+            "keywords": {"type": "text"},
+            "document_id": {"type": "keyword"},
+            "owner_scope": {"type": "keyword"},
+            "tenant_schema": {"type": "keyword"},
+            "platform_tenant_id": {"type": "keyword"},
+            "source_name": {"type": "keyword"},
+            "chunk_id": {"type": "keyword"},
+            "chunk_number": {"type": "integer"},
+            "page_no": {"type": "integer"},
+            "modality": {"type": "keyword"},
+            "thread_id": {"type": "keyword"},
+            "person_ids": {"type": "keyword"},
+            "org_ids": {"type": "keyword"},
+            "entity_terms": {"type": "keyword"},
+            "created_at": {"type": "date"},
+        },
+    }
+    if sparse_enabled:
+        mapping["properties"]["passage_embedding"] = {"type": "rank_features"}
+    return {
+        "settings": {"number_of_shards": 1, "number_of_replicas": 0},
+        "mappings": mapping,
+    }
+
+
 def ensure_opensearch_index(client: Any, *, index_name: str) -> None:
     """Create the lexical + optional neural-sparse index and ingestion pipeline.
 
@@ -313,17 +367,9 @@ def ensure_opensearch_index(client: Any, *, index_name: str) -> None:
 
     if index_exists:
 
-        # Older indices use dynamic=false. Explicitly add the new
-        # provenance field so modality information is not discarded.
-        client.indices.put_mapping(
-            index=index_name,
-            body={
-                "properties": {
-                    "modality": {"type": "keyword"},
-                    "owner_scope": {"type": "keyword"},
-                }
-            },
-        )
+        # Older indices use dynamic=false. Explicitly add metadata fields
+        # needed by retrieval and graph expansion.
+        _ensure_entity_mapping(client, index_name)
 
         if sparse_enabled:
             try:
@@ -334,33 +380,7 @@ def ensure_opensearch_index(client: Any, *, index_name: str) -> None:
                 sparse_enabled = False
         return
 
-    mapping: dict[str, Any] = {
-        "dynamic": "false",
-        "properties": {
-            "passage_text": {"type": "text"},
-            "title": {"type": "text"},
-            "heading": {"type": "text"},
-            "section": {"type": "text"},
-            "keywords": {"type": "text"},
-            "document_id": {"type": "keyword"},
-            "owner_scope": {"type": "keyword"},
-            "tenant_schema": {"type": "keyword"},
-            "platform_tenant_id": {"type": "keyword"},
-            "source_name": {"type": "keyword"},
-            "chunk_id": {"type": "keyword"},
-            "chunk_number": {"type": "integer"},
-            "page_no": {"type": "integer"},
-            "modality": {"type": "keyword"},
-            "thread_id": {"type": "keyword"},
-            "person_ids": {"type": "keyword"},
-            "org_ids": {"type": "keyword"},
-            "created_at": {"type": "date"},
-        },
-    }
-    if sparse_enabled:
-        mapping["properties"]["passage_embedding"] = {"type": "rank_features"}
-
-    body: dict[str, Any] = {"settings": {"number_of_shards": 1, "number_of_replicas": 0}, "mappings": mapping}
+    body = _new_index_mapping_body(sparse_enabled=sparse_enabled)
 
     if sparse_enabled and sparse_model_id:
         pipeline_name = f"{index_name}_neural_sparse"
@@ -411,6 +431,7 @@ def _flatten_metadata(
         "heading": "",
         "section": section or source_name,
         "keywords": "",
+        "entity_terms": extract_entity_terms(content),
         "page_no": page_no,
         "modality": modality,
         "passage_text": content,
@@ -426,6 +447,9 @@ def _source_to_chunk(hit: dict[str, Any]) -> RetrievedChunk:
     score = float(hit.get("_score") or 0.0)
     document_id = str(source.get("document_id") or "")
     chunk_number = int(source.get("chunk_number") or 0)
+    raw_entity_terms = source.get("entity_terms") or []
+    if isinstance(raw_entity_terms, str):
+        raw_entity_terms = [raw_entity_terms]
     meta = {
         "document_id": document_id,
         "tenant_schema": source.get("tenant_schema", ""),
@@ -439,6 +463,11 @@ def _source_to_chunk(hit: dict[str, Any]) -> RetrievedChunk:
         "title": source.get("title", ""),
         "heading": source.get("heading", ""),
         "keywords": source.get("keywords", ""),
+        "entity_terms": [
+            str(value).casefold()
+            for value in raw_entity_terms
+            if isinstance(value, str) and value.strip()
+        ][:24],
     }
     evidence_id = f"E{chunk_number or abs(hash((document_id, source.get('chunk_id')))) % 100000}"
     return RetrievedChunk(
@@ -1069,6 +1098,153 @@ def _results_to_chunks(hits: list[dict[str, Any]]) -> list[RetrievedChunk]:
     return chunks
 
 
+def _graph_query_body(
+    entity_terms: list[str],
+    *,
+    document_ids: list[str],
+    tenant_schema: str,
+    platform_tenant_id: str,
+    owner_scope: str,
+    exclude_chunk_ids: list[str],
+    size: int,
+) -> dict[str, Any]:
+    """Build a graph-neighbour search with the exact retrieval ACL filters."""
+    terms = list(dict.fromkeys(
+        str(term).strip().casefold()
+        for term in entity_terms
+        if isinstance(term, str) and term.strip()
+    ))
+    body: dict[str, Any] = {
+        "size": max(0, int(size)),
+        "track_total_hits": False,
+        "_source": {"excludes": ["passage_embedding"]},
+        "query": {
+            "bool": {
+                "filter": _build_filters(
+                    list(document_ids), tenant_schema, platform_tenant_id, owner_scope
+                ),
+                "must": [{"terms": {"entity_terms": terms}}],
+            }
+        },
+        "sort": [{"_score": {"order": "desc"}}],
+    }
+    if exclude_chunk_ids:
+        body["query"]["bool"]["must_not"] = [
+            {"ids": {"values": list(dict.fromkeys(exclude_chunk_ids))}}
+        ]
+    return body
+
+
+async def _expand_graph_candidates(
+    chunks: list[RetrievedChunk],
+    *,
+    tenant_schema: str,
+    platform_tenant_id: str,
+    document_ids: list[str],
+    owner_scope: str,
+    enabled: bool = GRAPH_RAG_ENABLED,
+    max_hops: int = GRAPH_RAG_MAX_HOPS,
+    max_entities: int = GRAPH_RAG_MAX_ENTITIES,
+    max_chunks: int = GRAPH_RAG_MAX_CHUNKS,
+    client: Any | None = None,
+) -> list[RetrievedChunk]:
+    """Expand passages through shared-entity edges inside the authorised scope.
+
+    Each hop is one OpenSearch query over the same owner/tenant/document
+    allow-list used by lexical retrieval. The traversal is bounded by hops,
+    entities and chunks. Failures leave the original ranked candidates intact.
+    """
+    allowed = {str(document_id) for document_id in document_ids}
+    authorised = [
+        chunk for chunk in chunks
+        if str(chunk.document_id or "") in allowed
+    ]
+    if not allowed or not authorised:
+        return []
+    if not enabled or max_hops <= 0 or max_entities <= 0 or max_chunks <= 0:
+        return authorised
+
+    def chunk_identity(chunk: RetrievedChunk) -> str:
+        return str(
+            chunk.meta_data.get("chunk_id")
+            or f"{chunk.document_id}:{chunk.meta_data.get('chunk_number', '')}"
+        )
+
+    seen_chunk_ids = {chunk_identity(chunk) for chunk in authorised}
+    frontier: set[str] = {
+        str(entity).casefold()
+        for chunk in authorised
+        for entity in (chunk.meta_data.get("entity_terms") or [])
+        if isinstance(entity, str) and entity.strip()
+    }
+    if not frontier:
+        return authorised
+
+    explored_entities: set[str] = set()
+    extras: list[RetrievedChunk] = []
+    best_seed_score = max((float(chunk.score or 0.0) for chunk in authorised), default=0.0)
+    index_name = opensearch_index_name(tenant_schema, platform_tenant_id)
+
+    for hop in range(1, min(2, int(max_hops)) + 1):
+        terms = sorted(frontier - explored_entities)[:max_entities]
+        if not terms or len(extras) >= max_chunks:
+            break
+        explored_entities.update(terms)
+        body = _graph_query_body(
+            terms,
+            document_ids=list(document_ids),
+            tenant_schema=tenant_schema,
+            platform_tenant_id=platform_tenant_id,
+            owner_scope=owner_scope,
+            exclude_chunk_ids=sorted(seen_chunk_ids),
+            size=max_chunks - len(extras),
+        )
+        try:
+            if client is None:
+                client = build_opensearch_client()
+            response = await _to_thread_with_retry(
+                client.search, index=index_name, body=body
+            )
+            hits = response.get("hits", {}).get("hits", [])
+        except Exception:
+            # Graph expansion is an enhancement; lexical evidence remains usable.
+            break
+
+        next_frontier: set[str] = set()
+        for hit in hits:
+            candidate = _source_to_chunk(hit)
+            if candidate.document_id not in allowed:
+                continue
+            identity = chunk_identity(candidate)
+            if identity in seen_chunk_ids:
+                continue
+            candidate_entities = {
+                str(entity).casefold()
+                for entity in (candidate.meta_data.get("entity_terms") or [])
+                if isinstance(entity, str) and entity.strip()
+            }
+            shared = sorted(candidate_entities.intersection(terms))
+            if not shared:
+                continue
+            seen_chunk_ids.add(identity)
+            candidate.meta_data["graph_expanded"] = True
+            candidate.meta_data["graph_hop"] = hop
+            candidate.meta_data["graph_shared_entities"] = shared
+            candidate.score = best_seed_score * (0.8 ** hop) * min(
+                1.0, 0.5 + 0.15 * len(shared)
+            )
+            extras.append(candidate)
+            next_frontier.update(candidate_entities - explored_entities)
+            if len(extras) >= max_chunks:
+                break
+        frontier = next_frontier
+
+    combined = authorised + extras
+    for index, chunk in enumerate(combined, start=1):
+        chunk.evidence_id = f"E{index}"
+    return combined
+
+
 async def retrieve_and_rerank(
     query: str,
     *,
@@ -1100,15 +1276,22 @@ async def retrieve_and_rerank(
 
     hits = await _to_thread_with_retry(_search)
     chunks = _results_to_chunks(hits)
+    chunks = await _expand_graph_candidates(
+        chunks,
+        tenant_schema=tenant_schema,
+        platform_tenant_id=platform_tenant_id,
+        document_ids=document_ids,
+        owner_scope=owner_scope,
+        client=client,
+    )
     if RERANK_ENABLED and chunks:
-        candidates = chunks[: max(RERANK_CANDIDATE_K, top_k)]
+        candidates = chunks[: max(RERANK_CANDIDATE_K, top_k) + GRAPH_RAG_MAX_CHUNKS]
         try:
             chunks = await _to_thread_with_retry(_rerank, query, candidates, top_n=top_k)
         except Exception:
-            # Reranking is an enhancement, not a hard dependency for retrieval.
-            # If the hosted service is unavailable, return the fused OpenSearch
-            # candidates rather than taking down the user's request.
-            chunks = candidates[:top_k]
+            # Preserve graceful degradation while allowing strong graph edges
+            # to compete with the lexical seed set by their bounded score.
+            chunks = sorted(candidates, key=lambda chunk: -float(chunk.score or 0.0))[:top_k]
     return chunks[:top_k]
 
 

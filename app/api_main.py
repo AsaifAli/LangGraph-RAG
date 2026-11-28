@@ -145,6 +145,20 @@ def _strip_evidence_tags(value: str) -> str:
     ).strip()
 
 
+def _graph_expanded_chunk_count(chunks: list[Any] | None) -> int:
+    """Count graph-expanded chunks from either internal dataclasses or API dicts."""
+    count = 0
+    for chunk in chunks or []:
+        metadata = (
+            chunk.get("meta_data")
+            if isinstance(chunk, dict)
+            else getattr(chunk, "meta_data", None)
+        )
+        if isinstance(metadata, dict) and metadata.get("graph_expanded") is True:
+            count += 1
+    return count
+
+
 def _safe_outcome(outcome: dict[str, Any]) -> dict[str, Any]:
     """Return only bounded, UI-relevant answer metadata; never persist owner IDs."""
     safe = {
@@ -175,6 +189,7 @@ def _safe_outcome(outcome: dict[str, Any]) -> dict[str, Any]:
             for key in (
                 "source_name", "file_name", "document_name", "page_no",
                 "section", "modality", "title", "url",
+                "graph_expanded", "graph_hop", "graph_shared_entities",
             )
             if key in metadata
         }
@@ -809,6 +824,9 @@ async def stream_chat_message(
                         model=details.get("model") or None,
                         metrics={
                             "retrieved_chunks": len(outcome.get("chunks") or []),
+                            "graph_expanded_chunks": _graph_expanded_chunk_count(
+                                outcome.get("chunks")
+                            ),
                             "web_sources": len(outcome.get("web_sources") or []),
                             "used_knowledge_base": bool(outcome.get("used_knowledge_base")),
                             "used_primary_source": bool(outcome.get("used_primary_source")),
