@@ -143,7 +143,7 @@ _CONTEXTUAL_QUERY_CUES = re.compile(
     r"\b(?:it|its|they|them|their|theirs|this|that|these|those|he|she|him|her|his|hers|"
     r"former|latter|same|another|both|either|neither|there|then|above|earlier|previous|"
     r"first|second|third|other one)\b|"
-    r"^(?:and|also|what about|how about|why\??$|how so|can you elaborate|elaborate|"
+    r"^(?:and|also|what about|how about|how so|can you elaborate|elaborate|
     r"explain further|tell me more|what else|which one)\b",
     re.IGNORECASE,
 )
@@ -158,7 +158,8 @@ Return JSON only in this exact shape:
 def _needs_contextual_rewrite(query: str, prior_messages: list[BaseMessage]) -> bool:
     """Only spend an additional model call when a follow-up needs chat context."""
     candidate = str(query or "").strip()
-    return bool(candidate and prior_messages and _CONTEXTUAL_QUERY_CUES.search(candidate))
+    has_contextual_cue = bool(_CONTEXTUAL_QUERY_CUES.search(candidate) or re.fullmatch(r"why\\??", candidate, re.IGNORECASE))
+    return bool(candidate and prior_messages and has_contextual_cue)
 
 
 async def _rewrite_followup_query(
