@@ -132,7 +132,7 @@ The process is bounded by a hard round limit, keeping query expansion from becom
 
 Retrieved candidates are combined with **Reciprocal Rank Fusion (RRF)** when multiple retrieval signals are available. RRF operates on the independently ranked candidate lists rather than requiring their raw scores to be directly comparable.
 
-The fused candidates can then be passed to a **cross-encoder reranker**. In the deployed configuration this can use the hosted Jina AI reranker; local development can use the configured local reranking backend.
+The fused candidates can then be passed to a **cross-encoder reranker**. In the deployed configuration this can use the hosted Jina AI reranker; local development can use the configured local reranking backend. After reranking, EvidenceFlow can append a small number of neighbouring chunks from the same document to restore surrounding paragraph/table context that a narrow match may omit. These context-only chunks retain their own page/chunk provenance, are visibly distinguished in metadata, and are constrained by the exact same owner, tenant, and active-document allow-list.
 
 Reranking is an enhancement rather than a hard dependency: if the reranking service fails, EvidenceFlow can return the fused OpenSearch candidates instead of taking down the retrieval request.
 
@@ -144,6 +144,8 @@ Reranking is an enhancement rather than a hard dependency: if the reranking serv
 - **RRF** for combining independently ranked sparse retrieval results
 - **Jina AI cross-encoder reranking** for final candidate ordering when enabled
 - **Bounded agentic query expansion** for weak first-pass retrieval
+- **Adjacent-chunk context expansion** for surrounding paragraph and table continuity
+- **Fail-closed document scoping**: an empty authorised allow-list yields no results, never an owner-wide search
 - **Whole-document evidence handling** for stronger source context
 - **Persistent conversation state** across interactions
 - **Turn-scoped evidence registry** for provenance and citation traceability
@@ -223,6 +225,8 @@ OPENSEARCH_SPARSE_PRUNE_RATIO=0.1
 LEXICAL_CANDIDATE_K=40
 NEURAL_CANDIDATE_K=40
 RRF_K=60
+RETRIEVAL_CONTEXT_WINDOW_CHUNKS=1
+RETRIEVAL_CONTEXT_MAX_EXTRA_CHUNKS=6
 ```
 
 Secrets such as `JINA_API_KEY`, `OPENROUTER_API_KEY`, `OPENSEARCH_PASSWORD`, `TAVILY_API_KEY`, and `KATZILLA_API_KEY` are supplied through the deployment environment rather than committed to the repository.
