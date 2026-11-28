@@ -29,7 +29,8 @@ _EXTERNAL_FACTS = re.compile(
     r"recent(?:ly)?|this\s+(?:week|month|year)|market\s+(?:price|rate|average|benchmark)|"
     r"industry\s+(?:standard|benchmark|average)|benchmark(?:s|ing)?|"
     r"(?:going|typical|prevailing)\s+(?:market\s+)?rate|price\s+range|"
-    r"competitive(?:ly)?\s+(?:price|priced)?|fair(?:ly)?\s+(?:price|priced|quote|quotation)|"
+    r"competitive(?:ly)?\s+(?:price|priced)?|fair(?:ly)?(?:\s+(?:price|priced|quote|quotation))?|"
+    r"overpriced|underpriced|good\s+deal|best\s+value|too\s+expensive|"
     r"reasonable\s+(?:market\s+)?(?:price|rate|quote|quotation)|"
     r"supplier\s+(?:reputation|reviews|credentials)|independently\s+verif(?:y|ied)|"
     r"public\s+records?|regulatory\s+(?:update|changes?)|latest\s+regulations?)\b",
