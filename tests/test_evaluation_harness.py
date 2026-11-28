@@ -162,6 +162,10 @@ def test_runtime_guardrail_metrics_use_only_bounded_numeric_signals():
         ],
         "web_sources": [{"title": "Private Source Title", "url": "https://example.invalid"}],
         "final_answer": "Private generated answer",
+        "guardrail_findings": [
+            {"kind": "prompt_injection", "message": "PRIVATE FINDING TEXT", "blocked": False},
+            {"kind": "secret_leakage", "message": "PRIVATE SECRET FINDING", "blocked": True},
+        ],
     })
 
     assert metrics["runtime.citation_coverage"] == 0.8
@@ -177,5 +181,9 @@ def test_runtime_guardrail_metrics_use_only_bounded_numeric_signals():
     assert metrics["retrieval.chunk_count"] == 2
     assert metrics["retrieval.graph_expanded_chunk_count"] == 1
     assert metrics["retrieval.web_source_count"] == 1
+    assert metrics["runtime.guardrail_finding_count"] == 2
+    assert metrics["runtime.guardrail_blocked"] == 1.0
+    assert "PRIVATE FINDING TEXT" not in str(metrics)
+    assert "PRIVATE SECRET FINDING" not in str(metrics)
     assert "Private Source Title" not in str(metrics)
     assert "Private generated answer" not in str(metrics)
