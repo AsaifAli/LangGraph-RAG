@@ -23,3 +23,19 @@ def test_retrieval_filters_require_the_exact_owner_scope():
     assert {"term": {"owner_scope": owner_a}} in filters_a
     assert {"term": {"owner_scope": owner_b}} in filters_b
     assert filters_a != filters_b
+
+
+
+def test_empty_document_scope_in_legacy_builder_fails_closed():
+    from types import SimpleNamespace
+    from retrieval.kb_filter_builder import build_kb_filter_expr
+
+    request = SimpleNamespace(
+        tenant_schema="poc_demo",
+        platform_tenant_id="langgraph_rag",
+        document_ids=[],
+    )
+
+    filters = build_kb_filter_expr(request)
+
+    assert {"match_none": {}} in filters
