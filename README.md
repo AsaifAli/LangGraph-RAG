@@ -285,6 +285,33 @@ Configure these server-side variables on the EvidenceFlow deployment:
 Telemetry is best-effort. If the URL or token is missing, or the evaluation service is unavailable, EvidenceFlow continues its normal workflow without blocking the user. The website links to the shared read-only engineering assurance dashboard; this app does not run a separate harness service or require an additional provider key.
 
 
+### Runtime evaluation signals
+
+When a chat turn completes, EvidenceFlow sends a separate `evaluation.completed` event containing only deterministic, scalar checks computed by the application:
+
+- Citation coverage and citation verification ratios.
+- Verified/partial grounding, trust-review, security-blocked and abstention flags.
+- Numeric-claim support.
+- Verified/proposed evidence counts.
+- Retrieved chunk count, graph-expanded chunk count and web-source count.
+- Guardrail finding count and blocked flag.
+
+These values describe deterministic runtime checks. They are **not** RAGAS/DeepEval LLM-judge scores and are not mixed into the replay fixture score.
+
+### Optional live RAGAS judging
+
+Live RAGAS judging is disabled by default. To enable the first supported judge pass:
+
+1. Install the optional evaluator dependencies with `pip install -r requirements-evaluation.txt`.
+2. Set `EVALUATION_RAGAS_ENABLED=true` on the EvidenceFlow API service.
+3. Ensure the existing Gateway session handoff and `LLM_GATEWAY_URL` configuration are working.
+
+The opt-in background evaluator uses the current request's short-lived Gateway session to score Faithfulness and Context Precision without reference. It does not delay or change the user-facing answer. Answer Relevancy is not enabled until a separate embedding model is explicitly configured; the evaluator does not choose one implicitly.
+
+RAGAS receives the user's current question, the generated answer and the retrieved passages only for the evaluator call through the configured Gateway. The Evaluation Harness receives only normalized numeric scores and optional version labels. No prompts, answers, retrieved contexts, source names, document IDs, Gateway tokens or credentials are sent to the harness. The feature is best-effort and disabled by default; judge requests can incur provider usage/cost and should only be enabled after the configured Gateway/provider's data-processing terms are reviewed for the intended data.
+
+Optional lineage variables are `EVALUATION_EXPERIMENT_ID`, `EVALUATION_DATASET_VERSION`, `EVALUATION_PROMPT_VERSION` and `EVALUATION_CONFIG_VERSION`. The model label comes from the active Gateway session. Without a configured experiment ID, runtime experiment comparisons group on the available model/prompt/config lineage.
+
 ## API contract and local development
 
 EvidenceFlow is an API, not a separate chat interface. The authenticated AI Engineering Studio workspace displays the API contract and sends requests through the same-origin client-scoped proxy. Direct service documentation is available from /docs and /openapi.json.

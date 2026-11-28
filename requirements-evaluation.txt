@@ -1,0 +1,3 @@
+# Optional live evaluation dependencies. Install separately from the normal app image.
+-r requirements.txt
+ragas>=0.4.4,<0.5

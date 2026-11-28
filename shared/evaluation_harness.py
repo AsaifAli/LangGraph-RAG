@@ -23,6 +23,11 @@ def record_event(
     model: str | None = None,
     metrics: dict | None = None,
     request_id: str | None = None,
+    experiment_id: str | None = None,
+    dataset_version: str | None = None,
+    prompt_version: str | None = None,
+    model_version: str | None = None,
+    config_version: str | None = None,
 ) -> bool:
     """Send bounded event metadata. Missing config/network must never fail the app."""
     base_url = os.getenv("EVALUATION_HARNESS_URL", "").strip().rstrip("/")
@@ -55,6 +60,16 @@ def record_event(
         "request_id": str(request_id)[:100] if request_id else None,
         "metrics": safe_metrics,
     }
+    for key, value in (
+        ("experiment_id", experiment_id),
+        ("dataset_version", dataset_version),
+        ("prompt_version", prompt_version),
+        ("model_version", model_version),
+        ("config_version", config_version),
+    ):
+        if isinstance(value, str) and value.strip():
+            payload[key] = value.strip()[:128]
+
     try:
         parsed = urlsplit(base_url)
         scheme = parsed.scheme.lower()
@@ -97,3 +112,92 @@ def record_event(
     except Exception:
         LOGGER.debug("Evaluation telemetry failed unexpectedly; continuing without it.")
         return False
+
+
+
+def _finite_metric(value: object) -> bool:
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(float(value))
+    )
+
+
+def build_runtime_evaluation_metrics(outcome: dict) -> dict[str, float | int]:
+    """Project deterministic EvidenceFlow guardrail/evidence checks into scalar metrics.
+
+    These are runtime checks, not LLM-as-a-judge scores. Only bounded numeric
+    values leave the application; document content, prompts, final answers,
+    source names, citations and guardrail text never enter the event payload.
+    """
+    if not isinstance(outcome, dict):
+        return {}
+
+    metrics: dict[str, float | int] = {}
+
+    quality = outcome.get("quality") if isinstance(outcome.get("quality"), dict) else {}
+    for source, target in (
+        ("citation_coverage", "runtime.citation_coverage"),
+        ("citation_verification", "runtime.citation_verification"),
+    ):
+        value = quality.get(source)
+        if _finite_metric(value) and 0.0 <= float(value) <= 100.0:
+            metrics[target] = round(float(value) / 100.0, 6)
+
+    grounding_status = str(outcome.get("grounding_status") or "").upper()
+    if grounding_status in {"VERIFIED", "PARTIAL", "UNVERIFIED", "NOT_APPLICABLE"}:
+        metrics["runtime.grounding_verified"] = float(grounding_status == "VERIFIED")
+        metrics["runtime.grounding_partial"] = float(grounding_status == "PARTIAL")
+
+    trust = outcome.get("trust") if isinstance(outcome.get("trust"), dict) else {}
+    trust_label = str(trust.get("label") or "").upper()
+    if trust_label:
+        metrics["runtime.trust_verified"] = float(trust_label == "VERIFIED")
+        metrics["runtime.trust_review_required"] = float(trust_label == "REVIEW")
+        metrics["runtime.security_blocked"] = float(
+            trust.get("security_blocked") is True or trust_label == "BLOCKED"
+        )
+
+    if isinstance(outcome.get("abstained"), bool):
+        metrics["runtime.abstained"] = float(outcome["abstained"])
+
+    numeric_support = quality.get("numeric_support")
+    if isinstance(numeric_support, dict) and isinstance(
+        numeric_support.get("numeric_claims_supported"), bool
+    ):
+        metrics["runtime.numeric_claims_supported"] = float(
+            numeric_support["numeric_claims_supported"]
+        )
+
+    for source, target in (
+        ("verified_count", "evidence.verified_count"),
+        ("proposed_count", "evidence.proposed_count"),
+    ):
+        value = outcome.get(source)
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+            metrics[target] = min(value, 2_147_483_647)
+
+    chunks = outcome.get("chunks") if isinstance(outcome.get("chunks"), list) else []
+    metrics["retrieval.chunk_count"] = min(len(chunks), 2_147_483_647)
+    graph_expanded = 0
+    for chunk in chunks:
+        if isinstance(chunk, dict):
+            metadata = chunk.get("meta_data")
+        else:
+            metadata = getattr(chunk, "meta_data", None)
+        if isinstance(metadata, dict) and metadata.get("graph_expanded") is True:
+            graph_expanded += 1
+    metrics["retrieval.graph_expanded_chunk_count"] = graph_expanded
+
+    web_sources = outcome.get("web_sources")
+    if isinstance(web_sources, list):
+        metrics["retrieval.web_source_count"] = min(len(web_sources), 2_147_483_647)
+
+    findings = outcome.get("guardrail_findings")
+    if isinstance(findings, list):
+        metrics["runtime.guardrail_finding_count"] = min(len(findings), 2_147_483_647)
+        metrics["runtime.guardrail_blocked"] = float(
+            any(isinstance(item, dict) and item.get("blocked") is True for item in findings)
+        )
+
+    return metrics

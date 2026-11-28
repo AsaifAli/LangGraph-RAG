@@ -814,14 +814,19 @@ async def stream_chat_message(
                 _save_workspace(owner_scope, live_state)
 
                 try:
-                    from shared.evaluation_harness import record_event
+                    from shared.evaluation_harness import (
+                        build_runtime_evaluation_metrics,
+                        record_event,
+                    )
 
+                    duration_ms = (time.perf_counter() - started) * 1000
+                    model_label = details.get("model") or None
                     record_event(
                         event_type="run.completed",
                         status="warning" if outcome.get("abstained") else "success",
                         workflow="rag_query",
-                        duration_ms=(time.perf_counter() - started) * 1000,
-                        model=details.get("model") or None,
+                        duration_ms=duration_ms,
+                        model=model_label,
                         metrics={
                             "retrieved_chunks": len(outcome.get("chunks") or []),
                             "graph_expanded_chunks": _graph_expanded_chunk_count(
@@ -832,8 +837,54 @@ async def stream_chat_message(
                             "used_primary_source": bool(outcome.get("used_primary_source")),
                         },
                     )
-                except Exception:
-                    LOGGER.debug("optional_evaluation_event_not_recorded")
+
+                    runtime_metrics = build_runtime_evaluation_metrics(final_outcome)
+                    if runtime_metrics:
+                        record_event(
+                            event_type="evaluation.completed",
+                            status="success",
+                            workflow="rag_query",
+                            duration_ms=duration_ms,
+                            model=model_label,
+                            model_version=model_label,
+                            experiment_id=os.getenv("EVALUATION_EXPERIMENT_ID") or None,
+                            dataset_version=os.getenv("EVALUATION_DATASET_VERSION") or None,
+                            prompt_version=os.getenv("EVALUATION_PROMPT_VERSION") or None,
+                            config_version=os.getenv("EVALUATION_CONFIG_VERSION") or None,
+                            metrics=runtime_metrics,
+                        )
+
+                    # Optional external judging runs after the user-facing answer
+                    # has been persisted. It uses the short-lived Gateway session
+                    # and never sends source text, prompts or answers to the harness.
+                    from retrieval.rag_pipeline import _get_env
+                    from shared.ragas_evaluation import schedule_ragas_evaluation
+
+                    retrieved_contexts = [
+                        str(chunk.get("content") or "")[:1400]
+                        for chunk in (outcome.get("chunks") or [])[:8]
+                        if isinstance(chunk, dict) and chunk.get("content")
+                    ]
+                    schedule_ragas_evaluation(
+                        user_input=message,
+                        response=str(outcome.get("final_answer") or ""),
+                        retrieved_contexts=retrieved_contexts,
+                        gateway_token=str(details.get("access_token") or ""),
+                        gateway_url=(
+                            _get_env("LLM_GATEWAY_URL", "").strip()
+                            or _get_env("LLM_BASE_URL", "").strip()
+                        ),
+                        model_label=model_label,
+                        experiment_id=os.getenv("EVALUATION_EXPERIMENT_ID") or None,
+                        dataset_version=os.getenv("EVALUATION_DATASET_VERSION") or None,
+                        prompt_version=os.getenv("EVALUATION_PROMPT_VERSION") or None,
+                        config_version=os.getenv("EVALUATION_CONFIG_VERSION") or None,
+                    )
+                except Exception as exc:
+                    LOGGER.debug(
+                        "optional_evaluation_reporting_skipped error_type=%s",
+                        type(exc).__name__,
+                    )
                 yield _json_for_sse("final", {"message": assistant_message, "outcome": outcome})
             except asyncio.TimeoutError:
                 message_text = f"Research exceeded the {DEFAULT_TURN_TIMEOUT_SECONDS}-second time limit. Please retry."
