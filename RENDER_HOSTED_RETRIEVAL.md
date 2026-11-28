@@ -25,8 +25,11 @@ The Render manifest sets OPENSEARCH_NEURAL_SPARSE=false by default and configure
              |
              +--> RRF fusion
              +--> configured reranker (Jina on hosted Render)
+             +--> adjacent-chunk context (same authorised document allow-list)
              +--> evidence verification / guardrails
              - LLM synthesis
+
+Empty document allow-lists fail closed and are never widened to every document owned by the account. Context expansion fetches only neighbouring chunks from the selected source documents and cannot introduce another conversation's private attachments. The default window is one chunk on either side, capped at six extra passages per turn; set `RETRIEVAL_CONTEXT_WINDOW_CHUNKS=0` to disable it.
 
 Dense-vector k-NN is not the foundation of this profile. Classical inverted-index lexical retrieval remains the baseline; neural-sparse retrieval is an optional additional signal and is disabled by default in the current Render manifest.
 
@@ -42,6 +45,8 @@ Dense-vector k-NN is not the foundation of this profile. Classical inverted-inde
     JINA_API_URL=https://api.jina.ai/v1/rerank
     JINA_RERANK_MODEL=jina-reranker-v1-turbo-en
     JINA_API_KEY=<Jina API key>
+    RETRIEVAL_CONTEXT_WINDOW_CHUNKS=1
+    RETRIEVAL_CONTEXT_MAX_EXTRA_CHUNKS=6
 
 OpenRouter, web research, optional primary-source tools, and the shared Gateway also depend on their respective server-side environment settings.
 
