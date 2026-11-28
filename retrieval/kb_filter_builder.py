@@ -18,4 +18,6 @@ def build_kb_filter_expr(request: Any, scope: Any = None) -> list[dict[str, Any]
     document_ids = getattr(request, "document_ids", None)
     if document_ids:
         filters.append({"terms": {"document_id": [str(x) for x in document_ids]}})
+    else:
+        filters.append({"match_none": {}})
     return filters
