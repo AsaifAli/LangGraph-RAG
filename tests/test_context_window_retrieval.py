@@ -73,7 +73,6 @@ def test_context_window_expansion_appends_adjacent_chunks_without_replacing_rank
             ]}}
 
     monkeypatch.setattr(pipeline, "build_opensearch_client", lambda: FakeClient())
-    monkeypatch.setattr(pipeline, "_to_thread_with_retry", lambda fn, *args, **kwargs: _run_sync(fn, *args, **kwargs))
 
     result = asyncio.run(
         pipeline._expand_context_chunks(
@@ -98,10 +97,6 @@ def test_context_window_expansion_appends_adjacent_chunks_without_replacing_rank
     assert len(calls) == 1
 
 
-def _run_sync(fn, *args, **kwargs):
-    return fn(*args, **kwargs)
-
-
 def test_context_expansion_does_not_query_without_authorised_document_ids(monkeypatch):
     def unexpected_client():
         raise AssertionError("Context expansion must not query without a document allow-list.")
@@ -120,7 +115,7 @@ def test_context_expansion_does_not_query_without_authorised_document_ids(monkey
         )
     )
 
-    assert result == [make_chunk("doc-a", 5, "central evidence")]
+    assert result == []
 
 
 def test_context_expansion_ignores_seed_chunks_outside_the_authorised_scope(monkeypatch):
